@@ -60,20 +60,24 @@ func (t *NotebookEditTool) Call(ctx context.Context, input map[string]interface{
 
 	command, _ := input["command"].(string)
 	cellNumber := toInt(input["cell_number"])
+	if cellNumber < 0 {
+		return errorResult(fmt.Sprintf("Invalid cell number: %d", cellNumber)), nil
+	}
 	source, _ := input["source"].(string)
 	cellType, _ := input["cell_type"].(string)
-	if cellType == "" {
-		cellType = "code"
-	}
 
 	switch command {
 	case "insert":
+		ct := cellType
+		if ct == "" {
+			ct = "code"
+		}
 		newCell := map[string]interface{}{
-			"cell_type": cellType,
+			"cell_type": ct,
 			"source":    splitNotebookSource(source),
 			"metadata":  map[string]interface{}{},
 		}
-		if cellType != "markdown" {
+		if ct != "markdown" {
 			newCell["outputs"] = []interface{}{}
 			newCell["execution_count"] = nil
 		}

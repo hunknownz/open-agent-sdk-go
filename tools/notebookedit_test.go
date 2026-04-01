@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -37,7 +38,7 @@ func TestNotebookEditTool(t *testing.T) {
 	ctx := testToolCtx(t)
 
 	// insert markdown cell at position 0
-	r, err := tool.Call(nil, map[string]interface{}{
+	r, err := tool.Call(context.Background(), map[string]interface{}{
 		"file_path":   nbPath,
 		"command":     "insert",
 		"cell_number": float64(0),
@@ -49,7 +50,7 @@ func TestNotebookEditTool(t *testing.T) {
 	}
 
 	// replace cell 0
-	r, err = tool.Call(nil, map[string]interface{}{
+	r, err = tool.Call(context.Background(), map[string]interface{}{
 		"file_path":   nbPath,
 		"command":     "replace",
 		"cell_number": float64(0),
@@ -60,7 +61,7 @@ func TestNotebookEditTool(t *testing.T) {
 	}
 
 	// delete cell 0
-	r, err = tool.Call(nil, map[string]interface{}{
+	r, err = tool.Call(context.Background(), map[string]interface{}{
 		"file_path":   nbPath,
 		"command":     "delete",
 		"cell_number": float64(0),
@@ -70,7 +71,7 @@ func TestNotebookEditTool(t *testing.T) {
 	}
 
 	// delete out of bounds
-	r, _ = tool.Call(nil, map[string]interface{}{
+	r, _ = tool.Call(context.Background(), map[string]interface{}{
 		"file_path":   nbPath,
 		"command":     "delete",
 		"cell_number": float64(99),
