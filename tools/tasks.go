@@ -263,7 +263,7 @@ func (t *TaskStopTool) InputSchema() types.ToolInputSchema {
 		Required: []string{"taskId"},
 	}
 }
-func (t *TaskStopTool) IsConcurrencySafe(input map[string]interface{}) bool { return true }
+func (t *TaskStopTool) IsConcurrencySafe(input map[string]interface{}) bool { return false }
 func (t *TaskStopTool) IsReadOnly(input map[string]interface{}) bool        { return false }
 func (t *TaskStopTool) Call(ctx context.Context, input map[string]interface{}, tCtx *types.ToolUseContext) (*types.ToolResult, error) {
 	id, _ := input["taskId"].(string)
