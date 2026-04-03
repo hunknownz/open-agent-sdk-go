@@ -162,6 +162,18 @@ func NewClient(config ClientConfig) *Client {
 	return &Client{config: config}
 }
 
+// Model returns the current model name.
+func (c *Client) Model() string {
+	return c.config.Model
+}
+
+// SetModel changes the model used for subsequent requests.
+func (c *Client) SetModel(model string) {
+	c.config.Model = model
+	cfg := GetModelConfig(model)
+	c.config.MaxTokens = cfg.MaxOutputTokens
+}
+
 // APIMessage is a message sent to the API.
 type APIMessage struct {
 	Role    string              `json:"role"`

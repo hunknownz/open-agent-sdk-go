@@ -16,6 +16,7 @@ type PermissionDecision struct {
 	Behavior     PermissionBehavior     `json:"behavior"`
 	UpdatedInput map[string]interface{} `json:"updated_input,omitempty"`
 	Reason       string                 `json:"reason,omitempty"`
+	Interrupt    bool                   `json:"interrupt,omitempty"`
 }
 
 // PermissionMode controls tool approval behavior.
@@ -26,6 +27,7 @@ const (
 	PermissionModeAcceptEdits       PermissionMode = "acceptEdits"
 	PermissionModeBypassPermissions PermissionMode = "bypassPermissions"
 	PermissionModePlan              PermissionMode = "plan"
+	PermissionModeDontAsk           PermissionMode = "dontAsk"
 )
 
 // CanUseToolFn is a callback for permission decisions.

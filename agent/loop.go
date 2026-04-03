@@ -62,7 +62,7 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 	}
 	a.messages = append(a.messages, userMsg)
 
-	// Build tool params - filter by allowedTools if specified
+	// Build tool params - filter by allowedTools and disallowedTools
 	allTools := a.toolRegistry.All()
 	if len(a.opts.AllowedTools) > 0 {
 		allowedSet := make(map[string]bool, len(a.opts.AllowedTools))
@@ -72,6 +72,19 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 		var filtered []types.Tool
 		for _, t := range allTools {
 			if allowedSet[t.Name()] {
+				filtered = append(filtered, t)
+			}
+		}
+		allTools = filtered
+	}
+	if len(a.opts.DisallowedTools) > 0 {
+		disallowedSet := make(map[string]bool, len(a.opts.DisallowedTools))
+		for _, name := range a.opts.DisallowedTools {
+			disallowedSet[name] = true
+		}
+		var filtered []types.Tool
+		for _, t := range allTools {
+			if !disallowedSet[t.Name()] {
 				filtered = append(filtered, t)
 			}
 		}
@@ -118,11 +131,39 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 			Tools:    apiTools,
 		}
 
-		// Extended thinking
-		if a.opts.Thinking != nil && a.opts.Thinking.Type == "enabled" {
-			req.Thinking = &api.ThinkingConfig{
-				Type:         "enabled",
-				BudgetTokens: a.opts.Thinking.BudgetTokens,
+		// Extended thinking - explicit config takes precedence, then effort-based auto-config
+		if a.opts.Thinking != nil {
+			switch a.opts.Thinking.Type {
+			case ThinkingEnabled:
+				req.Thinking = &api.ThinkingConfig{
+					Type:         "enabled",
+					BudgetTokens: a.opts.Thinking.BudgetTokens,
+				}
+			case ThinkingAdaptive:
+				req.Thinking = &api.ThinkingConfig{
+					Type: "adaptive",
+				}
+			case ThinkingDisabled:
+				// No thinking config needed
+			}
+		} else if a.opts.Effort != "" {
+			switch a.opts.Effort {
+			case EffortLow:
+				// Disabled - no thinking config
+			case EffortMedium:
+				req.Thinking = &api.ThinkingConfig{
+					Type: "adaptive",
+				}
+			case EffortHigh:
+				req.Thinking = &api.ThinkingConfig{
+					Type:         "enabled",
+					BudgetTokens: 10000,
+				}
+			case EffortMax:
+				req.Thinking = &api.ThinkingConfig{
+					Type:         "enabled",
+					BudgetTokens: 50000,
+				}
 			}
 		}
 
@@ -144,6 +185,7 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 		}
 
 		var toolUseBlocks []types.ToolUseBlock
+		var streamError error
 
 		// Process stream
 	streamLoop:
@@ -157,13 +199,52 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 
 			case err := <-streamErr:
 				if err != nil {
-					return fmt.Errorf("API stream error: %w", err)
+					streamError = err
 				}
 				break streamLoop
 
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		}
+
+		// If stream failed and fallback model is configured, retry with fallback
+		if streamError != nil && a.opts.FallbackModel != "" && a.apiClient.Model() != a.opts.FallbackModel {
+			a.apiClient.SetModel(a.opts.FallbackModel)
+
+			// Reset assistant message for retry
+			assistantMsg = &types.Message{
+				Type:      types.MessageTypeAssistant,
+				Role:      "assistant",
+				UUID:      uuid.New().String(),
+				Timestamp: time.Now(),
+			}
+			toolUseBlocks = nil
+
+			streamEvents, streamErr = a.apiClient.CreateMessageStream(ctx, req)
+			streamError = nil
+
+		fallbackStreamLoop:
+			for {
+				select {
+				case event, ok := <-streamEvents:
+					if !ok {
+						break fallbackStreamLoop
+					}
+					a.processStreamEvent(event, assistantMsg, &toolUseBlocks)
+
+				case err := <-streamErr:
+					if err != nil {
+						return fmt.Errorf("API stream error (fallback model %s): %w", a.opts.FallbackModel, err)
+					}
+					break fallbackStreamLoop
+
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		} else if streamError != nil {
+			return fmt.Errorf("API stream error: %w", streamError)
 		}
 
 		// Update usage
