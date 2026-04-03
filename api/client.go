@@ -47,12 +47,21 @@ func GetModelConfig(model string) ModelConfig {
 	return ModelConfig{MaxOutputTokens: defaultMaxTokens, ContextWindow: 200000}
 }
 
+// Provider identifies the API format to use.
+type Provider string
+
+const (
+	ProviderAnthropic Provider = "anthropic"
+	ProviderOpenAI    Provider = "openai"
+)
+
 // ClientConfig configures the API client.
 type ClientConfig struct {
 	APIKey        string
 	BaseURL       string
 	Model         string
 	MaxTokens     int
+	Provider      Provider // "anthropic" or "openai" (auto-detected if empty)
 	HTTPClient    *http.Client
 	CustomHeaders map[string]string
 	ProxyURL      string
@@ -95,6 +104,11 @@ func NewClient(config ClientConfig) *Client {
 	if config.MaxTokens == 0 {
 		cfg := GetModelConfig(config.Model)
 		config.MaxTokens = cfg.MaxOutputTokens
+	}
+
+	// Auto-detect provider if not set
+	if config.Provider == "" {
+		config.Provider = detectProvider(config.BaseURL, config.APIKey, config.Model)
 	}
 
 	// Parse custom headers from env
@@ -248,6 +262,56 @@ func (c *Client) buildBetaHeaders(req MessagesRequest) string {
 	return strings.Join(betas, ",")
 }
 
+// detectProvider auto-detects the API provider from URL, key, and model.
+func detectProvider(baseURL, apiKey, model string) Provider {
+	u := strings.ToLower(baseURL)
+
+	// Explicit OpenAI-compatible endpoints
+	if strings.Contains(u, "openai.com") ||
+		strings.Contains(u, "openrouter.ai") ||
+		strings.Contains(u, "deepseek.com") ||
+		strings.Contains(u, "together.ai") ||
+		strings.Contains(u, "groq.com") ||
+		strings.Contains(u, "fireworks.ai") ||
+		strings.Contains(u, "ollama") ||
+		strings.Contains(u, "localhost") ||
+		strings.Contains(u, "127.0.0.1") ||
+		strings.Contains(u, "vllm") ||
+		strings.Contains(u, "lmstudio") {
+		return ProviderOpenAI
+	}
+
+	// Key prefix detection
+	if strings.HasPrefix(apiKey, "sk-or-") { // OpenRouter
+		return ProviderOpenAI
+	}
+	if strings.HasPrefix(apiKey, "sk-") && !strings.HasPrefix(apiKey, "sk-ant-") {
+		return ProviderOpenAI
+	}
+
+	// Model name detection
+	m := strings.ToLower(model)
+	if strings.HasPrefix(m, "gpt-") ||
+		strings.HasPrefix(m, "o1") ||
+		strings.HasPrefix(m, "o3") ||
+		strings.HasPrefix(m, "deepseek") ||
+		strings.HasPrefix(m, "llama") ||
+		strings.HasPrefix(m, "mistral") ||
+		strings.HasPrefix(m, "qwen") ||
+		strings.HasPrefix(m, "gemma") ||
+		strings.HasPrefix(m, "phi") ||
+		strings.Contains(m, "/") { // OpenRouter format: provider/model
+		return ProviderOpenAI
+	}
+
+	return ProviderAnthropic
+}
+
+// IsOpenAI returns true if this client uses the OpenAI API format.
+func (c *Client) IsOpenAI() bool {
+	return c.config.Provider == ProviderOpenAI
+}
+
 // CreateMessageStream sends a streaming messages request.
 func (c *Client) CreateMessageStream(ctx context.Context, req MessagesRequest) (<-chan StreamEvent, <-chan error) {
 	eventCh := make(chan StreamEvent, 64)
@@ -263,6 +327,14 @@ func (c *Client) CreateMessageStream(ctx context.Context, req MessagesRequest) (
 		}
 		if req.MaxTokens == 0 {
 			req.MaxTokens = c.config.MaxTokens
+		}
+
+		// Route to OpenAI adapter if needed
+		if c.config.Provider == ProviderOpenAI {
+			if err := c.createOpenAIStream(ctx, req, eventCh); err != nil {
+				errCh <- fmt.Errorf("API stream error: %w", err)
+			}
+			return
 		}
 
 		body, err := json.Marshal(req)
@@ -377,6 +449,11 @@ func (c *Client) CreateMessage(ctx context.Context, req MessagesRequest) (*Strea
 	}
 	if req.MaxTokens == 0 {
 		req.MaxTokens = c.config.MaxTokens
+	}
+
+	// Route to OpenAI adapter if needed
+	if c.config.Provider == ProviderOpenAI {
+		return c.createOpenAIMessage(ctx, req)
 	}
 
 	body, err := json.Marshal(req)
