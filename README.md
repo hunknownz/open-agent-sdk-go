@@ -288,7 +288,7 @@ go run ./examples/web/
 
 This repository is maintained with:
 
-- `origin = git@github.com:hunknownz/open-agent-sdk-go.git`
+- `origin = hunknownz/open-agent-sdk-go` via SSH or HTTPS
 - `upstream = https://github.com/codeany-ai/open-agent-sdk-go`
 
 We develop directly on `main` and selectively pull from upstream when useful.
