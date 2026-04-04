@@ -31,6 +31,9 @@ type ThinkingConfig struct {
 
 // Options configures an Agent.
 type Options struct {
+	// Provider mode: api (default) or claude-cli.
+	Provider types.Provider
+
 	// Model ID (e.g. "sonnet-4-6")
 	Model string
 
@@ -75,6 +78,12 @@ type Options struct {
 
 	// Environment variables (for API key, model, etc.)
 	Env map[string]string
+
+	// Claude CLI command path when ProviderClaudeCLI is selected.
+	CLICommand string
+
+	// Extra Claude CLI arguments.
+	CLIArgs []string
 
 	// Extended thinking configuration
 	Thinking *ThinkingConfig
@@ -209,12 +218,13 @@ func (a *Agent) Init(ctx context.Context) error {
 
 // QueryResult is the final result of a query.
 type QueryResult struct {
-	Text     string          `json:"text"`
-	Usage    types.Usage     `json:"usage"`
-	NumTurns int             `json:"num_turns"`
-	Duration time.Duration   `json:"duration"`
-	Messages []types.Message `json:"messages"`
-	Cost     float64         `json:"cost"`
+	Text             string          `json:"text"`
+	Usage            types.Usage     `json:"usage"`
+	NumTurns         int             `json:"num_turns"`
+	Duration         time.Duration   `json:"duration"`
+	Messages         []types.Message `json:"messages"`
+	Cost             float64         `json:"cost"`
+	StructuredOutput interface{}     `json:"structured_output,omitempty"`
 }
 
 // Query runs the agentic loop with streaming events.
@@ -226,7 +236,15 @@ func (a *Agent) Query(ctx context.Context, prompt string) (<-chan types.SDKMessa
 		defer close(eventCh)
 		defer close(errCh)
 
-		err := a.runLoop(ctx, prompt, eventCh)
+		var err error
+		switch a.opts.Provider {
+		case "", types.ProviderAPI:
+			err = a.runLoop(ctx, prompt, eventCh)
+		case types.ProviderClaudeCLI:
+			err = a.runCLILoop(ctx, prompt, eventCh)
+		default:
+			err = fmt.Errorf("unsupported provider %q", a.opts.Provider)
+		}
 		if err != nil {
 			errCh <- err
 		}
@@ -257,6 +275,7 @@ func (a *Agent) Prompt(ctx context.Context, prompt string) (*QueryResult, error)
 			}
 			result.NumTurns = event.NumTurns
 			result.Cost = event.Cost
+			result.StructuredOutput = event.StructuredOutput
 		}
 	}
 
@@ -287,7 +306,9 @@ func (a *Agent) Clear() {
 
 // Close cleans up resources.
 func (a *Agent) Close() {
-	a.mcpClient.Close()
+	if a.mcpClient != nil {
+		a.mcpClient.Close()
+	}
 }
 
 // spawnSubagent creates a child agent and runs a prompt synchronously.
@@ -298,16 +319,19 @@ func (a *Agent) spawnSubagent(ctx context.Context, config tools.SubagentConfig) 
 	}
 
 	childOpts := Options{
-		Model:              model,
-		APIKey:             a.opts.APIKey,
-		BaseURL:            a.opts.BaseURL,
-		CWD:                config.CWD,
-		MaxTurns:           30,
-		PermissionMode:     a.opts.PermissionMode,
-		SystemPrompt:       config.SystemPrompt,
-		CustomHeaders:      a.opts.CustomHeaders,
-		ProxyURL:           a.opts.ProxyURL,
-		TimeoutMs:          a.opts.TimeoutMs,
+		Provider:       a.opts.Provider,
+		Model:          model,
+		APIKey:         a.opts.APIKey,
+		BaseURL:        a.opts.BaseURL,
+		CWD:            config.CWD,
+		MaxTurns:       30,
+		PermissionMode: a.opts.PermissionMode,
+		SystemPrompt:   config.SystemPrompt,
+		CustomHeaders:  a.opts.CustomHeaders,
+		ProxyURL:       a.opts.ProxyURL,
+		TimeoutMs:      a.opts.TimeoutMs,
+		CLICommand:     a.opts.CLICommand,
+		CLIArgs:        append([]string{}, a.opts.CLIArgs...),
 	}
 
 	if childOpts.CWD == "" {
@@ -360,6 +384,11 @@ func (a *Agent) MCPClient() *mcp.Client {
 	return a.mcpClient
 }
 
+// ProviderMode returns the configured provider mode.
+func (a *Agent) ProviderMode() types.Provider {
+	return a.opts.Provider
+}
+
 // envFirst returns the first non-empty value from the env map or os env,
 // trying CODEANY_ prefix first, then ANTHROPIC_ for compatibility.
 func envFirst(env map[string]string, keys ...string) string {
@@ -378,6 +407,19 @@ func envFirst(env map[string]string, keys ...string) string {
 
 func resolveEnvOptions(opts *Options) {
 	env := opts.Env
+
+	if opts.Provider == "" {
+		switch envFirst(env, "CODEANY_PROVIDER", "ANTHROPIC_PROVIDER") {
+		case string(types.ProviderClaudeCLI):
+			opts.Provider = types.ProviderClaudeCLI
+		default:
+			if opts.CLICommand != "" {
+				opts.Provider = types.ProviderClaudeCLI
+			} else {
+				opts.Provider = types.ProviderAPI
+			}
+		}
+	}
 
 	if opts.APIKey == "" {
 		opts.APIKey = envFirst(env, "CODEANY_API_KEY", "ANTHROPIC_API_KEY", "CODEANY_AUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")

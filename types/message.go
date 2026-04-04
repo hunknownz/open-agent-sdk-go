@@ -20,11 +20,11 @@ const (
 type ContentBlockType string
 
 const (
-	ContentBlockText      ContentBlockType = "text"
-	ContentBlockToolUse   ContentBlockType = "tool_use"
+	ContentBlockText       ContentBlockType = "text"
+	ContentBlockToolUse    ContentBlockType = "tool_use"
 	ContentBlockToolResult ContentBlockType = "tool_result"
-	ContentBlockThinking  ContentBlockType = "thinking"
-	ContentBlockImage     ContentBlockType = "image"
+	ContentBlockThinking   ContentBlockType = "thinking"
+	ContentBlockImage      ContentBlockType = "image"
 )
 
 // ContentBlock represents a block of content in a message.
@@ -105,7 +105,7 @@ type Message struct {
 	Timestamp time.Time      `json:"timestamp"`
 
 	// For assistant messages
-	Model     string `json:"model,omitempty"`
+	Model      string `json:"model,omitempty"`
 	StopReason string `json:"stop_reason,omitempty"`
 
 	// Usage tracking
@@ -128,12 +128,13 @@ type SDKMessage struct {
 	Message *Message `json:"message,omitempty"`
 
 	// For "result" type
-	Text     string   `json:"text,omitempty"`
-	Usage    *Usage   `json:"usage,omitempty"`
-	NumTurns int      `json:"num_turns,omitempty"`
-	Duration int64    `json:"duration_ms,omitempty"`
-	Messages []Message `json:"messages,omitempty"`
-	Cost     float64  `json:"cost,omitempty"`
+	Text             string      `json:"text,omitempty"`
+	Usage            *Usage      `json:"usage,omitempty"`
+	NumTurns         int         `json:"num_turns,omitempty"`
+	Duration         int64       `json:"duration_ms,omitempty"`
+	Messages         []Message   `json:"messages,omitempty"`
+	Cost             float64     `json:"cost,omitempty"`
+	StructuredOutput interface{} `json:"structured_output,omitempty"`
 }
 
 // ToolUseBlock extracts tool use info from a content block.
