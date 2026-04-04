@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -14,19 +16,6 @@ import (
 
 	"github.com/hunknownz/open-agent-sdk-go/types"
 )
-
-type cliStreamMessage struct {
-	Type             string          `json:"type"`
-	Subtype          string          `json:"subtype,omitempty"`
-	Message          json.RawMessage `json:"message,omitempty"`
-	Result           string          `json:"result,omitempty"`
-	StructuredOutput interface{}     `json:"structured_output,omitempty"`
-	TotalCostUSD     float64         `json:"total_cost_usd,omitempty"`
-	NumTurns         int             `json:"num_turns,omitempty"`
-	Usage            *types.Usage    `json:"usage,omitempty"`
-	IsError          bool            `json:"is_error,omitempty"`
-	Errors           []string        `json:"errors,omitempty"`
-}
 
 type cliAssistantPayload struct {
 	Model   string            `json:"model,omitempty"`
@@ -41,8 +30,8 @@ type cliContentBlock struct {
 
 func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- types.SDKMessage) error {
 	startTime := time.Now()
-	a.cliMu.Lock()
-	defer a.cliMu.Unlock()
+	a.cliTurnMu.Lock()
+	defer a.cliTurnMu.Unlock()
 
 	userMsg := types.Message{
 		Type: types.MessageTypeUser,
@@ -56,36 +45,48 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 	}
 	a.messages = append(a.messages, userMsg)
 
-	if a.cliSession == nil || a.cliSession.isClosed() {
-		session, err := a.startCLISession(context.Background())
-		if err != nil {
-			return err
-		}
-		a.cliSession = session
+	if err := a.ensureCLISession(ctx); err != nil {
+		return err
 	}
-	session := a.cliSession
+
+	session := a.currentCLISession()
+	if session == nil {
+		return fmt.Errorf("claude cli session is unavailable")
+	}
+	defer session.cancelAllControlRequests()
+
+	if err := session.updateEnvironment(a.opts.Env); err != nil {
+		a.resetCLISession()
+		return err
+	}
 
 	if err := session.writeTurn(buildCLIUserInput(prompt)); err != nil {
-		_ = session.close()
-		a.cliSession = nil
+		a.resetCLISession()
 		return err
 	}
 
 	var (
 		lastAssistantText string
-		resultSeen        bool
-		resultErr         error
 	)
 
-	for session.scanner.Scan() {
-		line := strings.TrimSpace(session.scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		var message cliStreamMessage
-		if err := json.Unmarshal([]byte(line), &message); err != nil {
-			continue
+	for {
+		message, err := session.nextMessage(ctx)
+		if err != nil {
+			switch {
+			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+				a.resetCLISession()
+				return ctx.Err()
+			case errors.Is(err, io.EOF):
+				stderrText := session.stderrText()
+				a.resetCLISession()
+				if stderrText != "" {
+					return fmt.Errorf("claude cli did not emit a result message: %s", stderrText)
+				}
+				return fmt.Errorf("claude cli did not emit a result message")
+			default:
+				a.resetCLISession()
+				return err
+			}
 		}
 
 		switch message.Type {
@@ -101,8 +102,44 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 				Type:    types.MessageTypeAssistant,
 				Message: assistantMsg,
 			}
+		case string(types.MessageTypeSystem):
+			systemMsg, text := decodeCLISystem(message.Message)
+			if systemMsg == nil {
+				continue
+			}
+
+			if text != "" {
+				lastAssistantText = text
+			}
+			a.messages = append(a.messages, *systemMsg)
+			eventCh <- types.SDKMessage{
+				Type:    types.MessageTypeSystem,
+				Message: systemMsg,
+			}
+		case "control_request":
+			if err := a.handleCLIControlRequest(ctx, session, message); err != nil {
+				a.resetCLISession()
+				return err
+			}
+		case "update_environment_variables":
+			continue
 		case string(types.MessageTypeResult):
-			resultSeen = true
+			var usage *types.Usage
+			if message.Usage != nil {
+				decodedUsage, ok := message.Usage.(*types.Usage)
+				if ok {
+					usage = decodedUsage
+				} else {
+					bytes, marshalErr := json.Marshal(message.Usage)
+					if marshalErr == nil {
+						var parsedUsage types.Usage
+						if unmarshalErr := json.Unmarshal(bytes, &parsedUsage); unmarshalErr == nil {
+							usage = &parsedUsage
+						}
+					}
+				}
+			}
+
 			if len(message.Errors) > 0 || message.IsError {
 				text := strings.TrimSpace(strings.Join(message.Errors, "; "))
 				if text == "" {
@@ -111,7 +148,7 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 				if text == "" {
 					text = "claude cli returned an execution error"
 				}
-				resultErr = fmt.Errorf("claude cli %s: %s", message.Subtype, text)
+				return fmt.Errorf("claude cli %s: %s", message.Subtype, text)
 			}
 
 			resultText := strings.TrimSpace(message.Result)
@@ -136,37 +173,15 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 			eventCh <- types.SDKMessage{
 				Type:             types.MessageTypeResult,
 				Text:             resultText,
-				Usage:            message.Usage,
+				Usage:            usage,
 				NumTurns:         message.NumTurns,
 				Duration:         time.Since(startTime).Milliseconds(),
 				Cost:             message.TotalCostUSD,
 				StructuredOutput: message.StructuredOutput,
 			}
-
-			if resultErr != nil {
-				return resultErr
-			}
 			return nil
 		}
 	}
-
-	if err := session.scanner.Err(); err != nil {
-		_ = session.close()
-		a.cliSession = nil
-		return fmt.Errorf("read claude cli stream: %w", err)
-	}
-
-	if !resultSeen {
-		stderrText := session.stderrText()
-		_ = session.close()
-		a.cliSession = nil
-		if stderrText != "" {
-			return fmt.Errorf("claude cli did not emit a result message: %s", stderrText)
-		}
-		return fmt.Errorf("claude cli did not emit a result message")
-	}
-
-	return nil
 }
 
 func (a *Agent) newCLICommand(ctx context.Context) (*exec.Cmd, error) {
@@ -228,27 +243,11 @@ func buildCLISystemPrompt(opts Options) string {
 }
 
 func buildCLIEnv(overrides map[string]string) []string {
-	scrubbed := map[string]struct{}{
-		"ANTHROPIC_API_KEY":        {},
-		"ANTHROPIC_AUTH_TOKEN":     {},
-		"ANTHROPIC_BASE_URL":       {},
-		"ANTHROPIC_CUSTOM_HEADERS": {},
-		"ANTHROPIC_MODEL":          {},
-		"CODEANY_API_KEY":          {},
-		"CODEANY_AUTH_TOKEN":       {},
-		"CODEANY_BASE_URL":         {},
-		"CODEANY_CUSTOM_HEADERS":   {},
-		"CODEANY_MODEL":            {},
-		"SPIRE2MIND_API_KEY":       {},
-		"SPIRE2MIND_API_BASE_URL":  {},
-		"SPIRE2MIND_MODEL":         {},
-	}
-
 	envMap := make(map[string]string)
 	for _, entry := range os.Environ() {
 		parts := strings.SplitN(entry, "=", 2)
 		key := parts[0]
-		if _, blocked := scrubbed[strings.ToUpper(key)]; blocked {
+		if shouldScrubCLIEnv(key) {
 			continue
 		}
 		value := ""
@@ -269,7 +268,7 @@ func buildCLIEnv(overrides map[string]string) []string {
 		if strings.TrimSpace(key) == "" {
 			continue
 		}
-		if _, blocked := scrubbed[strings.ToUpper(key)]; blocked {
+		if shouldScrubCLIEnv(key) {
 			continue
 		}
 		envMap[key] = value
@@ -280,6 +279,143 @@ func buildCLIEnv(overrides map[string]string) []string {
 		env = append(env, key+"="+value)
 	}
 	return env
+}
+
+func (a *Agent) handleCLIControlRequest(ctx context.Context, session *cliSession, message *cliStreamMessage) error {
+	if message == nil || message.Request == nil {
+		return fmt.Errorf("received malformed claude cli control_request")
+	}
+	requestID := strings.TrimSpace(message.RequestID)
+	if requestID == "" {
+		return fmt.Errorf("received claude cli control_request without request_id")
+	}
+
+	requestCtx, cancel := context.WithCancel(ctx)
+	if !session.beginControlRequest(requestID, cancel) {
+		cancel()
+		return nil
+	}
+
+	request := *message.Request
+	go func() {
+		defer session.finishControlRequest(requestID)
+
+		response, err := a.resolveCLIControlRequest(requestCtx, request)
+		switch {
+		case err == nil:
+			_ = session.sendControlResponseSuccess(requestID, response)
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			_ = session.sendControlCancel(requestID)
+		default:
+			_ = session.sendControlResponseError(requestID, err.Error())
+		}
+	}()
+
+	return nil
+}
+
+func (a *Agent) resolveCLIControlRequest(ctx context.Context, request cliControlRequestPayload) (interface{}, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	switch request.Subtype {
+	case "can_use_tool":
+		return a.resolveCLIToolPermissionRequest(request)
+	case "get_settings":
+		return a.cliSettingsSnapshot(), nil
+	case "apply_flag_settings":
+		a.applyCLIFlagSettings(request.Settings)
+		return map[string]interface{}{}, nil
+	case "set_model":
+		if model := strings.TrimSpace(request.Model); model != "" {
+			a.opts.Model = model
+		}
+		return map[string]interface{}{}, nil
+	case "set_max_thinking_tokens":
+		return map[string]interface{}{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported control request subtype: %s", request.Subtype)
+	}
+}
+
+func (a *Agent) resolveCLIToolPermissionRequest(request cliControlRequestPayload) (interface{}, error) {
+	tool := a.toolRegistry.Get(request.ToolName)
+	if tool == nil {
+		return map[string]interface{}{
+			"behavior":  string(types.PermissionDeny),
+			"message":   fmt.Sprintf("tool %q is not registered in open-agent-sdk-go", request.ToolName),
+			"toolUseID": request.ToolUseID,
+		}, nil
+	}
+
+	decision, err := a.canUseTool(tool, request.Input)
+	if err != nil {
+		return nil, err
+	}
+	if decision == nil {
+		decision = &types.PermissionDecision{Behavior: types.PermissionAllow}
+	}
+
+	response := map[string]interface{}{
+		"behavior":  string(decision.Behavior),
+		"toolUseID": request.ToolUseID,
+	}
+	if len(decision.UpdatedInput) > 0 {
+		response["updatedInput"] = decision.UpdatedInput
+	}
+	if strings.TrimSpace(decision.Reason) != "" {
+		response["message"] = decision.Reason
+	}
+	if decision.Interrupt {
+		response["interrupt"] = true
+	}
+
+	return response, nil
+}
+
+func (a *Agent) cliSettingsSnapshot() map[string]interface{} {
+	effective := map[string]interface{}{
+		"model":          a.opts.Model,
+		"permissionMode": a.opts.PermissionMode,
+	}
+
+	applied := map[string]interface{}{
+		"model": a.opts.Model,
+	}
+	if a.opts.Effort != "" {
+		applied["effort"] = string(a.opts.Effort)
+	}
+
+	sourceSettings := map[string]interface{}{
+		"model": a.opts.Model,
+	}
+	if a.opts.PermissionMode != "" {
+		sourceSettings["permissionMode"] = a.opts.PermissionMode
+	}
+
+	return map[string]interface{}{
+		"effective": effective,
+		"sources": []map[string]interface{}{
+			{
+				"source":   "flagSettings",
+				"settings": sourceSettings,
+			},
+		},
+		"applied": applied,
+	}
+}
+
+func (a *Agent) applyCLIFlagSettings(settings map[string]interface{}) {
+	if len(settings) == 0 {
+		return
+	}
+
+	if model, ok := settings["model"].(string); ok && strings.TrimSpace(model) != "" {
+		a.opts.Model = model
+	}
 }
 
 func decodeCLIAssistant(raw json.RawMessage) (*types.Message, string) {
@@ -324,6 +460,47 @@ func decodeCLIAssistant(raw json.RawMessage) (*types.Message, string) {
 		UUID:      uuid.New().String(),
 		Timestamp: time.Now(),
 	}, strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func decodeCLISystem(raw json.RawMessage) (*types.Message, string) {
+	if len(raw) == 0 {
+		return nil, ""
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, ""
+	}
+
+	var textParts []string
+	if message, ok := payload["message"].(string); ok && strings.TrimSpace(message) != "" {
+		textParts = append(textParts, strings.TrimSpace(message))
+	}
+	if text, ok := payload["text"].(string); ok && strings.TrimSpace(text) != "" {
+		textParts = append(textParts, strings.TrimSpace(text))
+	}
+	if subtype, ok := payload["subtype"].(string); ok && strings.TrimSpace(subtype) != "" {
+		textParts = append(textParts, "subtype="+strings.TrimSpace(subtype))
+	}
+	if len(textParts) == 0 {
+		bytes, err := json.Marshal(payload)
+		if err != nil {
+			return nil, ""
+		}
+		textParts = append(textParts, string(bytes))
+	}
+
+	text := strings.Join(textParts, " ")
+	return &types.Message{
+		Type: types.MessageTypeSystem,
+		Role: "system",
+		Content: []types.ContentBlock{{
+			Type: types.ContentBlockText,
+			Text: text,
+		}},
+		UUID:      uuid.New().String(),
+		Timestamp: time.Now(),
+	}, text
 }
 
 func buildCLIUserInput(prompt string) string {

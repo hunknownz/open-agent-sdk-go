@@ -177,6 +177,7 @@ type Agent struct {
 	messages     []types.Message
 	sessionID    string
 	cliMu        sync.Mutex
+	cliTurnMu    sync.Mutex
 	cliSession   *cliSession
 }
 
@@ -375,6 +376,32 @@ func (a *Agent) Close() {
 	if a.mcpClient != nil {
 		a.mcpClient.Close()
 	}
+}
+
+// UpdateEnv merges runtime environment overrides and refreshes a live Claude CLI session.
+func (a *Agent) UpdateEnv(values map[string]string) error {
+	filtered := filterCLIEnvUpdates(values)
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	if a.opts.Env == nil {
+		a.opts.Env = make(map[string]string, len(filtered))
+	}
+	for key, value := range filtered {
+		a.opts.Env[key] = value
+	}
+
+	if a.opts.Provider != types.ProviderClaudeCLI {
+		return nil
+	}
+
+	session := a.currentCLISession()
+	if session == nil || session.isClosed() {
+		return nil
+	}
+
+	return session.updateEnvironment(filtered)
 }
 
 // spawnSubagent creates a child agent and runs a prompt synchronously.

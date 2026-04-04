@@ -14,6 +14,7 @@ Compared with upstream, this fork currently adds and maintains:
 
 - A first-class `claude-cli` provider
 - A persistent Claude CLI child session per `agent.Agent`
+- Structured control-plane handling for Claude CLI `control_request`, `control_response`, env refresh, and cancellation
 - Windows no-window process spawning for CLI sessions
 - Local-runtime integrations used by `spire2mind`
 - Ongoing compatibility, Windows, and developer workflow fixes
@@ -125,6 +126,7 @@ The `claude-cli` provider is session-based rather than one-shot.
 - If `Init()` is skipped, the first `Query()` or `Prompt()` lazily starts the session.
 - `Clear()` resets the in-memory conversation and restarts the CLI session.
 - `Close()` shuts down the child process and associated goroutines.
+- `UpdateEnv()` pushes runtime environment updates into the live Claude CLI session using `update_environment_variables`.
 
 The CLI is launched with the same structured I/O shape used by `research/claude-code`:
 
@@ -135,6 +137,17 @@ The CLI is launched with the same structured I/O shape used by `research/claude-
 - `--verbose`
 
 On Windows the SDK starts the child with `HideWindow + CREATE_NO_WINDOW`, so normal runtime use does not need an extra visible console window.
+
+## Claude CLI Control Plane
+
+The Claude CLI backend now carries a lightweight control plane modeled after `research/claude-code`'s structured I/O transport.
+
+- The child process is read by a persistent background session reader instead of a per-turn blocking scanner.
+- `control_request` messages are parsed and answered without hanging the turn loop.
+- `can_use_tool` requests are resolved through the SDK's existing tool registry and `CanUseTool` callback when possible.
+- Unsupported control subtypes return explicit `control_response` errors instead of stalling.
+- Runtime environment changes can be pushed into the live child process via `UpdateEnv()`.
+- Pending control work is canceled when a turn or session is torn down, and the SDK emits `control_cancel_request` back to the child.
 
 ## Environment Behavior
 

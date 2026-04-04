@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
@@ -15,10 +16,16 @@ type cliSession struct {
 	mu         sync.Mutex
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
-	scanner    *bufio.Scanner
 	stderrBuf  bytes.Buffer
 	stderrDone chan struct{}
+	events     chan cliStreamMessage
+	readDone   chan struct{}
+	doneCh     chan struct{}
+	readErr    error
 	closed     bool
+
+	controlMu       sync.Mutex
+	pendingControls map[string]context.CancelFunc
 }
 
 func (a *Agent) ensureCLISession(ctx context.Context) error {
@@ -71,13 +78,16 @@ func (a *Agent) startCLISession(ctx context.Context) (*cliSession, error) {
 	}
 
 	session := &cliSession{
-		cmd:        cmd,
-		stdin:      stdin,
-		scanner:    bufio.NewScanner(stdout),
-		stderrDone: make(chan struct{}),
+		cmd:             cmd,
+		stdin:           stdin,
+		stderrDone:      make(chan struct{}),
+		events:          make(chan cliStreamMessage, 128),
+		readDone:        make(chan struct{}),
+		doneCh:          make(chan struct{}),
+		pendingControls: make(map[string]context.CancelFunc),
 	}
-	session.scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+	go session.readLoop(stdout)
 	go func() {
 		defer close(session.stderrDone)
 		_, _ = session.stderrBuf.ReadFrom(stderr)
@@ -103,6 +113,37 @@ func (a *Agent) resetCLISession() {
 	}
 }
 
+func (s *cliSession) readLoop(stdout io.Reader) {
+	defer close(s.readDone)
+	defer close(s.events)
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var message cliStreamMessage
+		if err := json.Unmarshal([]byte(line), &message); err != nil {
+			s.setReadErr(fmt.Errorf("parse claude cli stream message: %w", err))
+			return
+		}
+
+		select {
+		case s.events <- message:
+		case <-s.doneCh:
+			return
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		s.setReadErr(fmt.Errorf("read claude cli stream: %w", err))
+	}
+}
+
 func (s *cliSession) isClosed() bool {
 	if s == nil {
 		return true
@@ -111,6 +152,39 @@ func (s *cliSession) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closed
+}
+
+func (s *cliSession) setReadErr(err error) {
+	if err == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readErr == nil {
+		s.readErr = err
+	}
+}
+
+func (s *cliSession) readerError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readErr
+}
+
+func (s *cliSession) nextMessage(ctx context.Context) (*cliStreamMessage, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case message, ok := <-s.events:
+		if !ok {
+			if err := s.readerError(); err != nil {
+				return nil, err
+			}
+			return nil, io.EOF
+		}
+		return &message, nil
+	}
 }
 
 func (s *cliSession) writeTurn(payload string) error {
@@ -124,19 +198,136 @@ func (s *cliSession) writeTurn(payload string) error {
 	if _, err := io.WriteString(s.stdin, payload); err != nil {
 		return fmt.Errorf("write claude cli input: %w", err)
 	}
-
 	return nil
 }
 
+func (s *cliSession) writeJSON(value interface{}) error {
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal claude cli input: %w", err)
+	}
+
+	return s.writeTurn(string(bytes) + "\n")
+}
+
+func (s *cliSession) updateEnvironment(values map[string]string) error {
+	filtered := filterCLIEnvUpdates(values)
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	return s.writeJSON(cliUpdateEnvironmentMessage{
+		Type:      "update_environment_variables",
+		Variables: filtered,
+	})
+}
+
+func (s *cliSession) sendControlResponseSuccess(requestID string, response interface{}) error {
+	if strings.TrimSpace(requestID) == "" {
+		return fmt.Errorf("control response requires request id")
+	}
+
+	return s.writeJSON(cliControlResponseEnvelope{
+		Type: "control_response",
+		Response: cliControlResponsePayload{
+			Subtype:   "success",
+			RequestID: requestID,
+			Response:  response,
+		},
+	})
+}
+
+func (s *cliSession) sendControlResponseError(requestID, errorText string) error {
+	if strings.TrimSpace(requestID) == "" {
+		return fmt.Errorf("control response requires request id")
+	}
+
+	return s.writeJSON(cliControlResponseEnvelope{
+		Type: "control_response",
+		Response: cliControlResponsePayload{
+			Subtype:   "error",
+			RequestID: requestID,
+			Error:     strings.TrimSpace(errorText),
+		},
+	})
+}
+
+func (s *cliSession) sendControlCancel(requestID string) error {
+	if strings.TrimSpace(requestID) == "" {
+		return fmt.Errorf("control cancel requires request id")
+	}
+
+	return s.writeJSON(cliControlCancelRequest{
+		Type:      "control_cancel_request",
+		RequestID: requestID,
+	})
+}
+
+func (s *cliSession) beginControlRequest(requestID string, cancel context.CancelFunc) bool {
+	if strings.TrimSpace(requestID) == "" || cancel == nil {
+		return false
+	}
+
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	if _, exists := s.pendingControls[requestID]; exists {
+		return false
+	}
+	s.pendingControls[requestID] = cancel
+	return true
+}
+
+func (s *cliSession) finishControlRequest(requestID string) {
+	s.controlMu.Lock()
+	cancel, ok := s.pendingControls[requestID]
+	if ok {
+		delete(s.pendingControls, requestID)
+	}
+	s.controlMu.Unlock()
+
+	if ok {
+		cancel()
+	}
+}
+
+func (s *cliSession) cancelAllControlRequests() {
+	s.controlMu.Lock()
+	pending := make(map[string]context.CancelFunc, len(s.pendingControls))
+	for requestID, cancel := range s.pendingControls {
+		pending[requestID] = cancel
+		delete(s.pendingControls, requestID)
+	}
+	s.controlMu.Unlock()
+
+	for requestID, cancel := range pending {
+		cancel()
+		_ = s.sendControlCancel(requestID)
+	}
+}
+
 func (s *cliSession) close() error {
+	s.controlMu.Lock()
+	pending := make([]context.CancelFunc, 0, len(s.pendingControls))
+	for requestID, cancel := range s.pendingControls {
+		pending = append(pending, cancel)
+		delete(s.pendingControls, requestID)
+	}
+	s.controlMu.Unlock()
+
+	for _, cancel := range pending {
+		cancel()
+	}
+
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
+	close(s.doneCh)
 	stdin := s.stdin
 	cmd := s.cmd
+	readDone := s.readDone
 	stderrDone := s.stderrDone
 	s.mu.Unlock()
 
@@ -148,7 +339,9 @@ func (s *cliSession) close() error {
 	if cmd != nil {
 		waitErr = cmd.Wait()
 	}
-
+	if readDone != nil {
+		<-readDone
+	}
 	if stderrDone != nil {
 		<-stderrDone
 	}
