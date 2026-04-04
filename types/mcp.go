@@ -18,6 +18,7 @@ const (
 	MCPTransportSSE       MCPTransportType = "sse"
 	MCPTransportHTTP      MCPTransportType = "http"
 	MCPTransportWebSocket MCPTransportType = "websocket"
+	MCPTransportSdk       MCPTransportType = "sdk"
 )
 
 // MCPServerConfig is the configuration for an MCP server.
@@ -33,6 +34,9 @@ type MCPServerConfig struct {
 	// For SSE/HTTP/WebSocket transport
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// For SDK transport (in-process server). Holds an *mcp.SdkServer.
+	Server interface{} `json:"-"`
 }
 
 // MCPToolDefinition describes a tool exposed by an MCP server.

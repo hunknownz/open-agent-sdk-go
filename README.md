@@ -1,23 +1,31 @@
 # Open Agent SDK (Go)
 
 `open-agent-sdk-go` is our long-term Go SDK for embedding agent loops in local apps and services.
-It supports two model backends:
+This fork is maintained at `github.com/hunknownz/open-agent-sdk-go` and is developed directly on `main`.
 
-- `api`: standard Anthropic-compatible Messages API
+The SDK supports two runtime model backends:
+
+- `api`: standard Anthropic-compatible and OpenAI-compatible HTTP APIs
 - `claude-cli`: a persistent local Claude Code CLI session using NDJSON structured I/O
 
-This fork is maintained at `github.com/hunknownz/open-agent-sdk-go`.
+## What This Fork Adds
 
-## Why This Fork Exists
-
-We are maintaining this SDK as a reusable agent framework rather than a one-off game integration.
 Compared with upstream, this fork currently adds and maintains:
 
 - A first-class `claude-cli` provider
-- A persistent Claude CLI session per agent instance
+- A persistent Claude CLI child session per `agent.Agent`
 - Windows no-window process spawning for CLI sessions
-- Structured decision and local-runtime integrations used by `spire2mind`
-- Ongoing compatibility fixes and Windows-focused developer workflow support
+- Local-runtime integrations used by `spire2mind`
+- Ongoing compatibility, Windows, and developer workflow fixes
+
+It also preserves the broader feature work already present on this fork's `main` branch:
+
+- Multi-provider API support for Anthropic and OpenAI-compatible backends
+- Extended thinking and effort levels
+- Fallback model support
+- Session management helpers
+- Rate limit tracking and context usage helpers
+- File checkpointing, sandboxing, plugins, and expanded built-in tools
 
 ## Installation
 
@@ -29,7 +37,8 @@ go get github.com/hunknownz/open-agent-sdk-go
 
 ### API Provider
 
-Use the standard Messages API backend when you have an API key and base URL.
+Use the standard HTTP provider when you have an API key and base URL.
+The API client auto-detects Anthropic vs OpenAI-compatible wire format when possible.
 
 ```go
 package main
@@ -58,6 +67,18 @@ func main() {
     }
     fmt.Println(result.Text)
 }
+```
+
+You can also point the API provider at OpenAI-compatible services:
+
+```go
+a := agent.New(agent.Options{
+    Provider:    types.ProviderAPI,
+    Model:       "gpt-4o",
+    APIKey:      os.Getenv("OPENAI_API_KEY"),
+    BaseURL:     "https://api.openai.com",
+    APIProvider: "openai",
+})
 ```
 
 ### Claude CLI Provider
@@ -134,26 +155,121 @@ By default it also preserves these Claude Code runtime toggles:
 ## Core Features
 
 - Streaming agent loop with tool execution and multi-turn conversations
-- Built-in tools for files, shell, search, web access, and subagents
-- MCP client support for `stdio`, `http`, and `sse`
-- Permission callbacks and allow/deny policies
-- Hook support for pre/post tool execution and post-sampling
-- Cost tracking and conversation history helpers
-- Structured output via JSON schema
+- Built-in tools for files, shell, search, web access, subagents, plan/todo/team utilities, MCP resources, cron, config, notebook editing, and more
+- MCP client support for `stdio`, `http`, and `sse`, plus in-process SDK server support
+- Permission callbacks, allow/deny policies, and directory validation
+- Hook support for pre/post tool execution, notifications, permission requests, and post-sampling
+- Extended thinking with explicit configuration and effort levels
+- Fallback model support for API-mode retries
+- Session management helpers
+- Rate limit tracking and context usage accounting
+- File checkpointing and sandbox utilities
+- Plugin loading support
 - Persistent Claude Code CLI backend support
+
+## Additional Capabilities
+
+### Extended Thinking and Effort
+
+```go
+a := agent.New(agent.Options{
+    Thinking: &agent.ThinkingConfig{
+        Type:         agent.ThinkingEnabled,
+        BudgetTokens: 10000,
+    },
+})
+
+a = agent.New(agent.Options{
+    Effort: agent.EffortHigh,
+})
+```
+
+### Fallback Model
+
+```go
+a := agent.New(agent.Options{
+    Model:         "opus-4-6",
+    FallbackModel: "sonnet-4-6",
+})
+```
+
+### Subagents
+
+```go
+a := agent.New(agent.Options{
+    Agents: map[string]agent.AgentDefinition{
+        "researcher": {
+            Description:  "Research agent for deep analysis",
+            Instructions: "You are a research specialist...",
+            Model:        "opus-4-6",
+            Tools:        []string{"Read", "Glob", "Grep", "WebSearch"},
+            MaxTurns:     20,
+            Effort:       agent.EffortHigh,
+        },
+    },
+})
+```
+
+### Session Management
+
+```go
+import "github.com/hunknownz/open-agent-sdk-go/session"
+
+mgr := session.NewManager("")
+sessions, _ := mgr.ListSessions("my-project")
+messages, _ := mgr.GetSessionMessages(sessions[0].SessionID)
+```
+
+### Hooks
+
+```go
+a := agent.New(agent.Options{
+    Hooks: hooks.HookConfig{
+        PreToolUse: []hooks.HookRule{{
+            Matcher: "Bash",
+            Hooks: []hooks.HookFn{
+                func(ctx context.Context, tool string, input map[string]interface{}) (string, error) {
+                    return "", nil
+                },
+            },
+        }},
+    },
+})
+```
+
+### Permissions
+
+```go
+config := &permissions.Config{
+    Mode: types.PermissionModeDefault,
+    AllowRules: []permissions.Rule{{ToolName: "Read"}},
+}
+```
+
+### In-Process MCP SDK Server
+
+```go
+server := mcp.NewSdkServer("my-tools", "1.0.0")
+```
 
 ## Repository Layout
 
 ```text
 open-agent-sdk-go/
   agent/         agent loop, provider integration, session management
-  api/           Anthropic-compatible Messages API client
+  api/           Anthropic-compatible and OpenAI-compatible HTTP clients
+  checkpoint/    file checkpointing and rewind helpers
   context/       system and workspace prompt context helpers
+  contextusage/  context window accounting
   costtracker/   token and cost accounting
   history/       JSONL conversation history helpers
   hooks/         hook registration and execution
-  mcp/           MCP client and transport support
+  mcp/           MCP client, SDK server, and transport support
   permissions/   permission rules and path validation
+  plugins/       plugin discovery and loading
+  ratelimit/     API rate limit tracking
+  sandbox/       sandbox policy helpers
+  session/       session inspection and management
   tools/         built-in tools and execution registry
   types/         shared message, tool, provider, and usage types
   examples/      runnable examples
@@ -165,6 +281,7 @@ open-agent-sdk-go/
 go run ./examples/01-simple-query/
 go run ./examples/04-prompt-api/
 go run ./examples/09-subagents/
+go run ./examples/web/
 ```
 
 ## Fork Maintenance
@@ -175,6 +292,12 @@ This repository is maintained with:
 - `upstream = https://github.com/codeany-ai/open-agent-sdk-go`
 
 We develop directly on `main` and selectively pull from upstream when useful.
+
+## Links
+
+- Upstream reference: [github.com/codeany-ai/open-agent-sdk-go](https://github.com/codeany-ai/open-agent-sdk-go)
+- TypeScript SDK: [github.com/codeany-ai/open-agent-sdk-typescript](https://github.com/codeany-ai/open-agent-sdk-typescript)
+- Fork issues: [github.com/hunknownz/open-agent-sdk-go/issues](https://github.com/hunknownz/open-agent-sdk-go/issues)
 
 ## License
 

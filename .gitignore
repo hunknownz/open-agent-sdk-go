@@ -40,3 +40,4 @@ secrets.json
 tmp/
 *.tmp
 *.log
+.worktrees/

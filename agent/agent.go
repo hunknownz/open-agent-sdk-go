@@ -22,13 +22,35 @@ const (
 	defaultMaxTurns = 100
 )
 
+// ThinkingType represents the type of thinking configuration.
+type ThinkingType string
+
+const (
+	// ThinkingAdaptive allows the model to decide when to think.
+	ThinkingAdaptive ThinkingType = "adaptive"
+	// ThinkingEnabled forces extended thinking on every request.
+	ThinkingEnabled ThinkingType = "enabled"
+	// ThinkingDisabled disables extended thinking.
+	ThinkingDisabled ThinkingType = "disabled"
+)
+
 // ThinkingConfig configures extended thinking.
 type ThinkingConfig struct {
-	// Type must be "enabled" to activate thinking.
-	Type string `json:"type"`
-	// BudgetTokens is the max number of thinking tokens.
-	BudgetTokens int `json:"budget_tokens"`
+	// Type controls the thinking mode: "adaptive", "enabled", or "disabled".
+	Type ThinkingType `json:"type"`
+	// BudgetTokens is the max number of thinking tokens (only for "enabled" type).
+	BudgetTokens int `json:"budget_tokens,omitempty"`
 }
+
+// Effort controls the reasoning effort level.
+type Effort string
+
+const (
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortMax    Effort = "max"
+)
 
 // Options configures an Agent.
 type Options struct {
@@ -43,6 +65,9 @@ type Options struct {
 
 	// API base URL override
 	BaseURL string
+
+	// API provider: "anthropic" or "openai" (auto-detected if empty).
+	APIProvider string
 
 	// Working directory for tools
 	CWD string
@@ -89,6 +114,24 @@ type Options struct {
 	// Extended thinking configuration
 	Thinking *ThinkingConfig
 
+	// Effort level for automatic thinking configuration
+	Effort Effort
+
+	// FallbackModel to use if the primary model fails
+	FallbackModel string
+
+	// DisallowedTools are tool names to deny
+	DisallowedTools []string
+
+	// Betas are beta feature flags to enable
+	Betas []string
+
+	// SettingSources specifies setting sources: "user", "project", "local"
+	SettingSources []string
+
+	// EnableFileCheckpointing enables file state tracking
+	EnableFileCheckpointing bool
+
 	// Structured output JSON schema name and schema
 	JSONSchema map[string]interface{}
 
@@ -107,10 +150,19 @@ type Options struct {
 
 // AgentDefinition defines a subagent configuration.
 type AgentDefinition struct {
-	Description  string   `json:"description"`
-	Instructions string   `json:"instructions"`
-	Tools        []string `json:"tools,omitempty"`
-	Model        string   `json:"model,omitempty"`
+	Description     string                           `json:"description"`
+	Instructions    string                           `json:"instructions"`
+	Tools           []string                         `json:"tools,omitempty"`
+	DisallowedTools []string                         `json:"disallowedTools,omitempty"`
+	Model           string                           `json:"model,omitempty"`
+	Skills          []string                         `json:"skills,omitempty"`
+	Memory          string                           `json:"memory,omitempty"`
+	Effort          Effort                           `json:"effort,omitempty"`
+	MaxTurns        int                              `json:"maxTurns,omitempty"`
+	Background      bool                             `json:"background,omitempty"`
+	PermissionMode  types.PermissionMode             `json:"permissionMode,omitempty"`
+	MCPServers      map[string]types.MCPServerConfig `json:"mcpServers,omitempty"`
+	InitialPrompt   string                           `json:"initialPrompt,omitempty"`
 }
 
 // Agent is the main agent that runs the agentic loop.
@@ -138,6 +190,7 @@ func New(opts Options) *Agent {
 		APIKey:        opts.APIKey,
 		BaseURL:       opts.BaseURL,
 		Model:         opts.Model,
+		Provider:      api.Provider(opts.APIProvider),
 		CustomHeaders: opts.CustomHeaders,
 		ProxyURL:      opts.ProxyURL,
 		TimeoutMs:     opts.TimeoutMs,
@@ -333,6 +386,7 @@ func (a *Agent) spawnSubagent(ctx context.Context, config tools.SubagentConfig) 
 
 	childOpts := Options{
 		Provider:       a.opts.Provider,
+		APIProvider:    a.opts.APIProvider,
 		Model:          model,
 		APIKey:         a.opts.APIKey,
 		BaseURL:        a.opts.BaseURL,

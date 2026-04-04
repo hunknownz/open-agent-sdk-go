@@ -66,6 +66,15 @@ func DefaultRegistry() *Registry {
 
 // GetAllBaseTools returns all built-in tool implementations.
 func GetAllBaseTools() []types.Tool {
+	store := NewTaskStore()
+	todoStore := NewTodoStore()
+	configStore := NewConfigStore()
+	mailbox := NewMailbox()
+	teamStore := NewTeamStore()
+	planState := NewPlanModeState()
+	worktreeStore := NewWorktreeStore()
+	cronStore := NewCronStore()
+
 	return []types.Tool{
 		NewBashTool(),
 		NewFileReadTool(),
@@ -75,5 +84,28 @@ func GetAllBaseTools() []types.Tool {
 		NewGrepTool(),
 		NewWebFetchTool(),
 		NewWebSearchTool(),
+		&TaskCreateTool{Store: store},
+		&TaskGetTool{Store: store},
+		&TaskListTool{Store: store},
+		&TaskUpdateTool{Store: store},
+		&TaskStopTool{Store: store},
+		&TaskOutputTool{Store: store},
+		NewTodoWriteTool(todoStore),
+		NewConfigTool(configStore),
+		NewSendMessageTool(mailbox, "agent"),
+		NewTeamCreateTool(teamStore),
+		NewTeamDeleteTool(teamStore),
+		NewEnterPlanModeTool(planState),
+		NewExitPlanModeTool(planState),
+		NewEnterWorktreeTool(worktreeStore),
+		NewExitWorktreeTool(worktreeStore),
+		NewListMcpResourcesTool(nil),
+		NewReadMcpResourceTool(nil),
+		NewCronCreateTool(cronStore),
+		NewCronDeleteTool(cronStore),
+		NewCronListTool(cronStore),
+		NewRemoteTriggerTool(),
+		NewNotebookEditTool(),
+		NewLSPTool(),
 	}
 }
