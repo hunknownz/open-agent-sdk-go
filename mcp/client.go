@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 // Client manages connections to MCP servers.

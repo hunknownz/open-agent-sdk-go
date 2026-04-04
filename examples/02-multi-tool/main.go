@@ -13,8 +13,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/codeany-ai/open-agent-sdk-go/agent"
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/agent"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 func main() {

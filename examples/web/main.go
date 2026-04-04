@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeany-ai/open-agent-sdk-go/agent"
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/agent"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 //go:embed index.html
@@ -101,7 +101,7 @@ func main() {
 	// New session
 	http.HandleFunc("/api/new", handleNew)
 
-	fmt.Printf("🚀 Web Chat running at http://localhost:%s\n", port)
+	fmt.Printf("Web Chat running at http://localhost:%s\n", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 

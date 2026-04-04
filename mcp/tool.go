@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 // MCPTool wraps an MCP server tool as a types.Tool.

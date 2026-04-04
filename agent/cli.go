@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 type cliStreamMessage struct {
@@ -43,9 +41,8 @@ type cliContentBlock struct {
 
 func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- types.SDKMessage) error {
 	startTime := time.Now()
-	if strings.TrimSpace(a.opts.CLICommand) == "" {
-		return fmt.Errorf("claude-cli provider requires CLICommand")
-	}
+	a.cliMu.Lock()
+	defer a.cliMu.Unlock()
 
 	userMsg := types.Message{
 		Type: types.MessageTypeUser,
@@ -59,34 +56,20 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 	}
 	a.messages = append(a.messages, userMsg)
 
-	cmd, err := a.newCLICommand(ctx, prompt)
-	if err != nil {
+	if a.cliSession == nil || a.cliSession.isClosed() {
+		session, err := a.startCLISession(context.Background())
+		if err != nil {
+			return err
+		}
+		a.cliSession = session
+	}
+	session := a.cliSession
+
+	if err := session.writeTurn(buildCLIUserInput(prompt)); err != nil {
+		_ = session.close()
+		a.cliSession = nil
 		return err
 	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("create claude cli stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("create claude cli stderr pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start claude cli: %w", err)
-	}
-
-	var stderrBuf bytes.Buffer
-	stderrDone := make(chan struct{})
-	go func() {
-		defer close(stderrDone)
-		_, _ = stderrBuf.ReadFrom(stderr)
-	}()
-
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var (
 		lastAssistantText string
@@ -94,8 +77,8 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 		resultErr         error
 	)
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for session.scanner.Scan() {
+		line := strings.TrimSpace(session.scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -159,30 +142,24 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 				Cost:             message.TotalCostUSD,
 				StructuredOutput: message.StructuredOutput,
 			}
+
+			if resultErr != nil {
+				return resultErr
+			}
+			return nil
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		<-stderrDone
-		_ = cmd.Wait()
+	if err := session.scanner.Err(); err != nil {
+		_ = session.close()
+		a.cliSession = nil
 		return fmt.Errorf("read claude cli stream: %w", err)
 	}
 
-	waitErr := cmd.Wait()
-	<-stderrDone
-
-	if resultErr != nil {
-		return resultErr
-	}
-	if waitErr != nil {
-		stderrText := strings.TrimSpace(stderrBuf.String())
-		if stderrText != "" {
-			return fmt.Errorf("claude cli exited with error: %w: %s", waitErr, stderrText)
-		}
-		return fmt.Errorf("claude cli exited with error: %w", waitErr)
-	}
 	if !resultSeen {
-		stderrText := strings.TrimSpace(stderrBuf.String())
+		stderrText := session.stderrText()
+		_ = session.close()
+		a.cliSession = nil
 		if stderrText != "" {
 			return fmt.Errorf("claude cli did not emit a result message: %s", stderrText)
 		}
@@ -192,7 +169,7 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 	return nil
 }
 
-func (a *Agent) newCLICommand(ctx context.Context, prompt string) (*exec.Cmd, error) {
+func (a *Agent) newCLICommand(ctx context.Context) (*exec.Cmd, error) {
 	args := []string{
 		"--print",
 		"--input-format", "stream-json",
@@ -228,12 +205,14 @@ func (a *Agent) newCLICommand(ctx context.Context, prompt string) (*exec.Cmd, er
 		args = append(args, "--json-schema", string(bytes))
 	}
 
-	args = append(args, a.opts.CLIArgs...)
+	if len(a.opts.CLIArgs) > 0 {
+		args = append(append([]string{}, a.opts.CLIArgs...), args...)
+	}
 
 	cmd := exec.CommandContext(ctx, a.opts.CLICommand, args...)
 	cmd.Dir = a.opts.CWD
-	cmd.Stdin = strings.NewReader(buildCLIUserInput(prompt))
 	cmd.Env = buildCLIEnv(a.opts.Env)
+	configureCLIProcess(cmd)
 	return cmd, nil
 }
 

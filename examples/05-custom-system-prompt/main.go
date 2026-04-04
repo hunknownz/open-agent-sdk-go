@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/codeany-ai/open-agent-sdk-go/agent"
+	"github.com/hunknownz/open-agent-sdk-go/agent"
 )
 
 func main() {

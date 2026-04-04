@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 // ToolSearchTool searches for and returns tool schemas.
-// Used for deferred tool discovery — tools announced by name but not
+// Used for deferred tool discovery - tools announced by name but not
 // loaded until explicitly searched for.
 type ToolSearchTool struct {
 	// Registry to search from.
@@ -28,8 +28,8 @@ func (t *ToolSearchTool) Description() string {
 	return `Fetches full schema definitions for deferred tools so they can be called.
 
 Query forms:
-- "select:Read,Edit,Grep" — fetch these exact tools by name
-- "keyword search" — keyword search, up to max_results best matches`
+- "select:Read,Edit,Grep" - fetch these exact tools by name
+- "keyword search" - keyword search, up to max_results best matches`
 }
 
 func (t *ToolSearchTool) InputSchema() types.ToolInputSchema {
@@ -76,13 +76,11 @@ func (t *ToolSearchTool) Call(ctx context.Context, input map[string]interface{},
 					matched = append(matched, tool)
 				}
 			}
-			// Also check registry
 			if tool := t.Registry.Get(name); tool != nil {
 				matched = append(matched, tool)
 			}
 		}
 	} else {
-		// Keyword search
 		queryLower := strings.ToLower(query)
 		for _, tool := range t.DeferredTools {
 			nameLower := strings.ToLower(tool.Name())

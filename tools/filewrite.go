@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/codeany-ai/open-agent-sdk-go/tools/diff"
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/tools/diff"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 // FileWriteTool writes content to files with staleness detection and diff generation.
@@ -24,7 +24,7 @@ func (t *FileWriteTool) Description() string {
 Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
 - If this is an existing file, you MUST use the Read tool first. This tool will fail otherwise.
-- Prefer the Edit tool for modifying existing files — it only sends the diff.
+- Prefer the Edit tool for modifying existing files - it only sends the diff.
 - Only use this tool to create new files or for complete rewrites.
 - NEVER create documentation files (*.md) or README files unless explicitly requested.`
 }

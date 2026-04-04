@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 // WebSearchTool performs web searches.
-// Note: This is a placeholder — actual implementation requires a search API
+// Note: This is a placeholder - actual implementation requires a search API
 // (e.g., Brave Search, Google Custom Search, or a built-in search provider).
 type WebSearchTool struct {
 	// SearchFn is a pluggable search implementation.
@@ -78,7 +78,6 @@ func (t *WebSearchTool) Call(ctx context.Context, input map[string]interface{}, 
 		}, nil
 	}
 
-	// Format results
 	var text string
 	for i, r := range results {
 		text += fmt.Sprintf("%d. **%s**\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Snippet)

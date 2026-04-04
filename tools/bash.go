@@ -13,14 +13,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 const (
 	bashDefaultTimeout    = 120 * time.Second
 	bashMaxTimeout        = 600 * time.Second
-	bashMaxOutputSize     = 1024 * 1024  // 1MB inline
-	bashLargeOutputThresh = 20 * 1024    // 20KB → persist to disk
+	bashMaxOutputSize     = 1024 * 1024     // 1MB inline
+	bashLargeOutputThresh = 20 * 1024       // 20KB -> persist to disk
 	bashMaxOutputDisk     = 5 * 1024 * 1024 // 5MB on disk
 )
 
@@ -196,11 +196,11 @@ func (t *BashTool) execute(ctx context.Context, command string, timeout time.Dur
 				len(output), persistedPath)
 			return &types.ToolResult{
 				Data: map[string]interface{}{
-					"stdout":             stdout.String(),
-					"stderr":             stderr.String(),
-					"exitCode":           exitCode,
-					"interrupted":        false,
-					"durationMs":         duration.Milliseconds(),
+					"stdout":              stdout.String(),
+					"stderr":              stderr.String(),
+					"exitCode":            exitCode,
+					"interrupted":         false,
+					"durationMs":          duration.Milliseconds(),
 					"persistedOutputPath": persistedPath,
 					"persistedOutputSize": len(output),
 				},

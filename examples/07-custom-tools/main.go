@@ -14,14 +14,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codeany-ai/open-agent-sdk-go/agent"
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/agent"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 // weatherTool is a custom tool that returns weather data.
 type weatherTool struct{}
 
-func (t *weatherTool) Name() string        { return "GetWeather" }
+func (t *weatherTool) Name() string { return "GetWeather" }
 func (t *weatherTool) Description() string {
 	return "Get current weather for a city. Returns temperature and conditions."
 }
@@ -49,7 +49,7 @@ func (t *weatherTool) Call(ctx context.Context, input map[string]interface{}, tC
 	if !ok {
 		temp = 20
 	}
-	result := fmt.Sprintf("Weather in %s: %d°C, partly cloudy", city, temp)
+	result := fmt.Sprintf("Weather in %s: %d deg C, partly cloudy", city, temp)
 	return &types.ToolResult{
 		Content: []types.ContentBlock{{Type: types.ContentBlockText, Text: result}},
 	}, nil
@@ -58,7 +58,7 @@ func (t *weatherTool) Call(ctx context.Context, input map[string]interface{}, tC
 // calculatorTool is a custom tool that evaluates simple math expressions.
 type calculatorTool struct{}
 
-func (t *calculatorTool) Name() string        { return "Calculator" }
+func (t *calculatorTool) Name() string { return "Calculator" }
 func (t *calculatorTool) Description() string {
 	return "Evaluate a simple mathematical expression with two numbers and an operator (+, -, *, /, **)."
 }

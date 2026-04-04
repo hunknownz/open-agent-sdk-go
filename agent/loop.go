@@ -8,10 +8,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/codeany-ai/open-agent-sdk-go/api"
-	agentcontext "github.com/codeany-ai/open-agent-sdk-go/context"
-	"github.com/codeany-ai/open-agent-sdk-go/tools"
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/api"
+	agentcontext "github.com/hunknownz/open-agent-sdk-go/context"
+	"github.com/hunknownz/open-agent-sdk-go/tools"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 const defaultSystemPrompt = `You are an AI assistant with access to tools. Use the tools available to you to help the user with their request. Be concise and direct in your responses.`
@@ -186,7 +186,7 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 
 		// Check if we need to run tools
 		if len(toolUseBlocks) == 0 {
-			// No tool calls — end of turn
+			// No tool calls - end of turn
 			break
 		}
 
@@ -249,8 +249,8 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 				}
 			}
 			eventCh <- types.SDKMessage{
-				Type: "tool_result",
-				Text: textContent,
+				Type:  "tool_result",
+				Text:  textContent,
 				Usage: &types.Usage{},
 				Message: &types.Message{
 					Type: "tool_result",

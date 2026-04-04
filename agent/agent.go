@@ -4,17 +4,18 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/codeany-ai/open-agent-sdk-go/api"
-	"github.com/codeany-ai/open-agent-sdk-go/costtracker"
-	"github.com/codeany-ai/open-agent-sdk-go/hooks"
-	"github.com/codeany-ai/open-agent-sdk-go/mcp"
-	"github.com/codeany-ai/open-agent-sdk-go/permissions"
-	"github.com/codeany-ai/open-agent-sdk-go/tools"
-	"github.com/codeany-ai/open-agent-sdk-go/types"
+	"github.com/hunknownz/open-agent-sdk-go/api"
+	"github.com/hunknownz/open-agent-sdk-go/costtracker"
+	"github.com/hunknownz/open-agent-sdk-go/hooks"
+	"github.com/hunknownz/open-agent-sdk-go/mcp"
+	"github.com/hunknownz/open-agent-sdk-go/permissions"
+	"github.com/hunknownz/open-agent-sdk-go/tools"
+	"github.com/hunknownz/open-agent-sdk-go/types"
 )
 
 const (
@@ -123,6 +124,8 @@ type Agent struct {
 	canUseTool   types.CanUseToolFn
 	messages     []types.Message
 	sessionID    string
+	cliMu        sync.Mutex
+	cliSession   *cliSession
 }
 
 // New creates a new Agent.
@@ -196,6 +199,12 @@ func New(opts Options) *Agent {
 
 // Init performs async initialization (MCP connections, etc.)
 func (a *Agent) Init(ctx context.Context) error {
+	if a.opts.Provider == types.ProviderClaudeCLI {
+		if err := a.ensureCLISession(ctx); err != nil {
+			return err
+		}
+	}
+
 	if a.opts.MCPServers == nil {
 		return nil
 	}
@@ -302,10 +311,14 @@ func (a *Agent) GetMessages() []types.Message {
 // Clear resets conversation history.
 func (a *Agent) Clear() {
 	a.messages = nil
+	if a.opts.Provider == types.ProviderClaudeCLI {
+		a.resetCLISession()
+	}
 }
 
 // Close cleans up resources.
 func (a *Agent) Close() {
+	a.resetCLISession()
 	if a.mcpClient != nil {
 		a.mcpClient.Close()
 	}
