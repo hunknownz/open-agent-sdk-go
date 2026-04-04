@@ -114,6 +114,89 @@ func TestClaudeCLIControlRequestResponse(t *testing.T) {
 	}
 }
 
+func TestClaudeCLIHookCallbackRouting(t *testing.T) {
+	agent := newHelperProcessAgentWithOptions(Options{
+		CLIHookCallbackHandler: func(ctx context.Context, request CLIControlRequest) (interface{}, error) {
+			return map[string]interface{}{
+				"decision": "allow",
+				"reason":   fmt.Sprintf("callback=%s", request.CallbackID),
+			}, nil
+		},
+	})
+	defer agent.Close()
+
+	result, err := agent.Prompt(context.Background(), "request-hook")
+	if err != nil {
+		t.Fatalf("Prompt(request-hook) error = %v", err)
+	}
+
+	if got := strings.TrimSpace(result.Text); got != "hook=success callback=cb-1 decision=allow" {
+		t.Fatalf("unexpected hook_callback result: %q", got)
+	}
+}
+
+func TestClaudeCLIElicitationDefaultsToCancel(t *testing.T) {
+	agent := newHelperProcessAgent()
+	defer agent.Close()
+
+	result, err := agent.Prompt(context.Background(), "request-elicitation")
+	if err != nil {
+		t.Fatalf("Prompt(request-elicitation) error = %v", err)
+	}
+
+	if got := strings.TrimSpace(result.Text); got != "elicitation=cancel" {
+		t.Fatalf("unexpected default elicitation result: %q", got)
+	}
+}
+
+func TestClaudeCLIElicitationCustomHandler(t *testing.T) {
+	agent := newHelperProcessAgentWithOptions(Options{
+		CLIElicitationHandler: func(ctx context.Context, request CLIControlRequest) (CLIElicitationResponse, error) {
+			return CLIElicitationResponse{
+				Action: "accept",
+				Content: map[string]interface{}{
+					"choice": "picked",
+				},
+			}, nil
+		},
+	})
+	defer agent.Close()
+
+	result, err := agent.Prompt(context.Background(), "request-elicitation-custom")
+	if err != nil {
+		t.Fatalf("Prompt(request-elicitation-custom) error = %v", err)
+	}
+
+	if got := strings.TrimSpace(result.Text); got != "elicitation=accept choice=picked" {
+		t.Fatalf("unexpected custom elicitation result: %q", got)
+	}
+}
+
+func TestClaudeCLIControlHandlerFallback(t *testing.T) {
+	agent := newHelperProcessAgentWithOptions(Options{
+		CLIControlHandler: func(ctx context.Context, request CLIControlRequest) (interface{}, bool, error) {
+			if request.Subtype != "hook_callback" {
+				return nil, false, nil
+			}
+
+			return map[string]interface{}{
+				"decision": "allow",
+				"reason":   "fallback",
+			}, true, nil
+		},
+	})
+	defer agent.Close()
+
+	result, err := agent.Prompt(context.Background(), "request-hook")
+	if err != nil {
+		t.Fatalf("Prompt(request-hook) error = %v", err)
+	}
+
+	if got := strings.TrimSpace(result.Text); got != "hook=success fallback decision=allow" {
+		t.Fatalf("unexpected fallback hook_callback result: %q", got)
+	}
+}
+
 func TestClaudeCLISessionCancelRequest(t *testing.T) {
 	agent := newHelperProcessAgent()
 	defer agent.Close()
@@ -222,6 +305,34 @@ func handleHelperUserMessage(state *helperCLIState, payload map[string]interface
 				"tool_use_id": fmt.Sprintf("tool-%d", state.turn),
 			},
 		})
+	case "request-hook":
+		requestID := fmt.Sprintf("req-hook-%d", state.turn)
+		state.pendingRequestID = requestID
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+			"type":       "control_request",
+			"request_id": requestID,
+			"request": map[string]interface{}{
+				"subtype":     "hook_callback",
+				"callback_id": "cb-1",
+				"input":       map[string]interface{}{"value": "ok"},
+				"tool_use_id": fmt.Sprintf("tool-hook-%d", state.turn),
+			},
+		})
+	case "request-elicitation", "request-elicitation-custom":
+		requestID := fmt.Sprintf("req-elicitation-%d", state.turn)
+		state.pendingRequestID = requestID
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+			"type":       "control_request",
+			"request_id": requestID,
+			"request": map[string]interface{}{
+				"subtype":          "elicitation",
+				"mcp_server_name":  "test-server",
+				"message":          "Pick one",
+				"mode":             "form",
+				"elicitation_id":   "elic-1",
+				"requested_schema": map[string]interface{}{"choice": "string"},
+			},
+		})
 	case "env":
 		helperWriteAssistantAndResult(state.turn, fmt.Sprintf("env=%s", state.env["TEST_DYNAMIC_ENV"]))
 	default:
@@ -241,11 +352,32 @@ func handleHelperControlResponse(state *helperCLIState, payload map[string]inter
 	switch subtype {
 	case "success":
 		responsePayload, _ := response["response"].(map[string]interface{})
-		behavior, _ := responsePayload["behavior"].(string)
-		if behavior == "" {
-			behavior = "unknown"
+		switch {
+		case strings.HasPrefix(requestID, "req-hook-"):
+			decision, _ := responsePayload["decision"].(string)
+			callback, _ := responsePayload["reason"].(string)
+			if decision == "" {
+				decision = "unknown"
+			}
+			text = fmt.Sprintf("hook=success %s decision=%s", callback, decision)
+		case strings.HasPrefix(requestID, "req-elicitation-"):
+			action, _ := responsePayload["action"].(string)
+			if action == "" {
+				action = "unknown"
+			}
+			text = fmt.Sprintf("elicitation=%s", action)
+			if content, ok := responsePayload["content"].(map[string]interface{}); ok {
+				if choice, ok := content["choice"].(string); ok && strings.TrimSpace(choice) != "" {
+					text += " choice=" + choice
+				}
+			}
+		default:
+			behavior, _ := responsePayload["behavior"].(string)
+			if behavior == "" {
+				behavior = "unknown"
+			}
+			text = fmt.Sprintf("control=success behavior=%s", behavior)
 		}
-		text = fmt.Sprintf("control=success behavior=%s", behavior)
 	case "error":
 		errorText, _ := response["error"].(string)
 		if strings.TrimSpace(errorText) == "" {
@@ -331,7 +463,11 @@ func helperPromptText(payload map[string]interface{}) string {
 }
 
 func newHelperProcessAgent() *Agent {
-	return New(Options{
+	return newHelperProcessAgentWithOptions(Options{})
+}
+
+func newHelperProcessAgentWithOptions(overrides Options) *Agent {
+	opts := Options{
 		Provider:   types.ProviderClaudeCLI,
 		Model:      "claude-sonnet-4-6",
 		CLICommand: os.Args[0],
@@ -342,7 +478,22 @@ func newHelperProcessAgent() *Agent {
 		Env: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
-	})
+	}
+
+	if overrides.CLIControlHandler != nil {
+		opts.CLIControlHandler = overrides.CLIControlHandler
+	}
+	if overrides.CLIHookCallbackHandler != nil {
+		opts.CLIHookCallbackHandler = overrides.CLIHookCallbackHandler
+	}
+	if overrides.CLIElicitationHandler != nil {
+		opts.CLIElicitationHandler = overrides.CLIElicitationHandler
+	}
+	for key, value := range overrides.Env {
+		opts.Env[key] = value
+	}
+
+	return New(opts)
 }
 
 func parseSessionAndTurn(t *testing.T, text string) (string, int) {

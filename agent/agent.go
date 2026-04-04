@@ -111,6 +111,15 @@ type Options struct {
 	// Extra Claude CLI arguments.
 	CLIArgs []string
 
+	// CLIHookCallbackHandler optionally handles Claude CLI hook_callback requests.
+	CLIHookCallbackHandler CLIHookCallbackHandler
+
+	// CLIElicitationHandler optionally handles Claude CLI elicitation requests.
+	CLIElicitationHandler CLIElicitationHandler
+
+	// CLIControlHandler optionally handles Claude CLI control requests before built-in routing.
+	CLIControlHandler CLIControlHandler
+
 	// Extended thinking configuration
 	Thinking *ThinkingConfig
 

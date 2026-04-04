@@ -15,6 +15,7 @@ Compared with upstream, this fork currently adds and maintains:
 - A first-class `claude-cli` provider
 - A persistent Claude CLI child session per `agent.Agent`
 - Structured control-plane handling for Claude CLI `control_request`, `control_response`, env refresh, and cancellation
+- Subtype-aware Claude CLI routing for `hook_callback`, `elicitation`, and custom control handlers
 - Windows no-window process spawning for CLI sessions
 - Local-runtime integrations used by `spire2mind`
 - Ongoing compatibility, Windows, and developer workflow fixes
@@ -145,9 +146,16 @@ The Claude CLI backend now carries a lightweight control plane modeled after `re
 - The child process is read by a persistent background session reader instead of a per-turn blocking scanner.
 - `control_request` messages are parsed and answered without hanging the turn loop.
 - `can_use_tool` requests are resolved through the SDK's existing tool registry and `CanUseTool` callback when possible.
+- `hook_callback` and `elicitation` can be handled by subtype-specific handlers or a generic catch-all control handler.
 - Unsupported control subtypes return explicit `control_response` errors instead of stalling.
 - Runtime environment changes can be pushed into the live child process via `UpdateEnv()`.
 - Pending control work is canceled when a turn or session is torn down, and the SDK emits `control_cancel_request` back to the child.
+
+You can hook the control plane at three levels:
+
+- `CLIHookCallbackHandler` for `hook_callback`
+- `CLIElicitationHandler` for `elicitation`
+- `CLIControlHandler` as a generic fallback for any control subtype
 
 ## Environment Behavior
 

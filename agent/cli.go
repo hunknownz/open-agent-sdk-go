@@ -121,6 +121,8 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 				a.resetCLISession()
 				return err
 			}
+		case "control_response", "control_cancel_request":
+			continue
 		case "update_environment_variables":
 			continue
 		case string(types.MessageTypeResult):
@@ -279,143 +281,6 @@ func buildCLIEnv(overrides map[string]string) []string {
 		env = append(env, key+"="+value)
 	}
 	return env
-}
-
-func (a *Agent) handleCLIControlRequest(ctx context.Context, session *cliSession, message *cliStreamMessage) error {
-	if message == nil || message.Request == nil {
-		return fmt.Errorf("received malformed claude cli control_request")
-	}
-	requestID := strings.TrimSpace(message.RequestID)
-	if requestID == "" {
-		return fmt.Errorf("received claude cli control_request without request_id")
-	}
-
-	requestCtx, cancel := context.WithCancel(ctx)
-	if !session.beginControlRequest(requestID, cancel) {
-		cancel()
-		return nil
-	}
-
-	request := *message.Request
-	go func() {
-		defer session.finishControlRequest(requestID)
-
-		response, err := a.resolveCLIControlRequest(requestCtx, request)
-		switch {
-		case err == nil:
-			_ = session.sendControlResponseSuccess(requestID, response)
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			_ = session.sendControlCancel(requestID)
-		default:
-			_ = session.sendControlResponseError(requestID, err.Error())
-		}
-	}()
-
-	return nil
-}
-
-func (a *Agent) resolveCLIControlRequest(ctx context.Context, request cliControlRequestPayload) (interface{}, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-
-	switch request.Subtype {
-	case "can_use_tool":
-		return a.resolveCLIToolPermissionRequest(request)
-	case "get_settings":
-		return a.cliSettingsSnapshot(), nil
-	case "apply_flag_settings":
-		a.applyCLIFlagSettings(request.Settings)
-		return map[string]interface{}{}, nil
-	case "set_model":
-		if model := strings.TrimSpace(request.Model); model != "" {
-			a.opts.Model = model
-		}
-		return map[string]interface{}{}, nil
-	case "set_max_thinking_tokens":
-		return map[string]interface{}{}, nil
-	default:
-		return nil, fmt.Errorf("unsupported control request subtype: %s", request.Subtype)
-	}
-}
-
-func (a *Agent) resolveCLIToolPermissionRequest(request cliControlRequestPayload) (interface{}, error) {
-	tool := a.toolRegistry.Get(request.ToolName)
-	if tool == nil {
-		return map[string]interface{}{
-			"behavior":  string(types.PermissionDeny),
-			"message":   fmt.Sprintf("tool %q is not registered in open-agent-sdk-go", request.ToolName),
-			"toolUseID": request.ToolUseID,
-		}, nil
-	}
-
-	decision, err := a.canUseTool(tool, request.Input)
-	if err != nil {
-		return nil, err
-	}
-	if decision == nil {
-		decision = &types.PermissionDecision{Behavior: types.PermissionAllow}
-	}
-
-	response := map[string]interface{}{
-		"behavior":  string(decision.Behavior),
-		"toolUseID": request.ToolUseID,
-	}
-	if len(decision.UpdatedInput) > 0 {
-		response["updatedInput"] = decision.UpdatedInput
-	}
-	if strings.TrimSpace(decision.Reason) != "" {
-		response["message"] = decision.Reason
-	}
-	if decision.Interrupt {
-		response["interrupt"] = true
-	}
-
-	return response, nil
-}
-
-func (a *Agent) cliSettingsSnapshot() map[string]interface{} {
-	effective := map[string]interface{}{
-		"model":          a.opts.Model,
-		"permissionMode": a.opts.PermissionMode,
-	}
-
-	applied := map[string]interface{}{
-		"model": a.opts.Model,
-	}
-	if a.opts.Effort != "" {
-		applied["effort"] = string(a.opts.Effort)
-	}
-
-	sourceSettings := map[string]interface{}{
-		"model": a.opts.Model,
-	}
-	if a.opts.PermissionMode != "" {
-		sourceSettings["permissionMode"] = a.opts.PermissionMode
-	}
-
-	return map[string]interface{}{
-		"effective": effective,
-		"sources": []map[string]interface{}{
-			{
-				"source":   "flagSettings",
-				"settings": sourceSettings,
-			},
-		},
-		"applied": applied,
-	}
-}
-
-func (a *Agent) applyCLIFlagSettings(settings map[string]interface{}) {
-	if len(settings) == 0 {
-		return
-	}
-
-	if model, ok := settings["model"].(string); ok && strings.TrimSpace(model) != "" {
-		a.opts.Model = model
-	}
 }
 
 func decodeCLIAssistant(raw json.RawMessage) (*types.Message, string) {

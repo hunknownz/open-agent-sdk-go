@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.2
+
+- Added subtype-aware Claude CLI control routing with `CLIHookCallbackHandler`, `CLIElicitationHandler`, and generic `CLIControlHandler` fallback support.
+- Captured raw Claude CLI control request payloads and normalized more request metadata for future subtype expansion.
+- Added regression coverage for hook callback routing, elicitation defaults, elicitation customization, and fallback control handling.
+
 ## v0.4.1
 
 - Added a background Claude CLI session reader so persistent sessions no longer depend on a per-turn blocking scanner.

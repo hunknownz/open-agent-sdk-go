@@ -38,18 +38,46 @@ type cliStreamMessage struct {
 }
 
 type cliControlRequestPayload struct {
-	Subtype           string                 `json:"subtype,omitempty"`
-	ToolName          string                 `json:"tool_name,omitempty"`
-	Input             map[string]interface{} `json:"input,omitempty"`
-	ToolUseID         string                 `json:"tool_use_id,omitempty"`
-	CallbackID        string                 `json:"callback_id,omitempty"`
-	ServerName        string                 `json:"server_name,omitempty"`
-	MCPServerName     string                 `json:"mcp_server_name,omitempty"`
-	Message           string                 `json:"message,omitempty"`
-	RequestedSchema   map[string]interface{} `json:"requested_schema,omitempty"`
-	Model             string                 `json:"model,omitempty"`
-	MaxThinkingTokens *int                   `json:"max_thinking_tokens,omitempty"`
-	Settings          map[string]interface{} `json:"settings,omitempty"`
+	Subtype               string                   `json:"subtype,omitempty"`
+	ToolName              string                   `json:"tool_name,omitempty"`
+	Input                 map[string]interface{}   `json:"input,omitempty"`
+	PermissionSuggestions []map[string]interface{} `json:"permission_suggestions,omitempty"`
+	BlockedPath           string                   `json:"blocked_path,omitempty"`
+	DecisionReason        string                   `json:"decision_reason,omitempty"`
+	Title                 string                   `json:"title,omitempty"`
+	DisplayName           string                   `json:"display_name,omitempty"`
+	ToolUseID             string                   `json:"tool_use_id,omitempty"`
+	AgentID               string                   `json:"agent_id,omitempty"`
+	Description           string                   `json:"description,omitempty"`
+	CallbackID            string                   `json:"callback_id,omitempty"`
+	ServerName            string                   `json:"server_name,omitempty"`
+	MCPServerName         string                   `json:"mcp_server_name,omitempty"`
+	Message               string                   `json:"message,omitempty"`
+	RequestedSchema       map[string]interface{}   `json:"requested_schema,omitempty"`
+	Mode                  string                   `json:"mode,omitempty"`
+	URL                   string                   `json:"url,omitempty"`
+	ElicitationID         string                   `json:"elicitation_id,omitempty"`
+	Model                 string                   `json:"model,omitempty"`
+	MaxThinkingTokens     *int                     `json:"max_thinking_tokens,omitempty"`
+	Settings              map[string]interface{}   `json:"settings,omitempty"`
+	Raw                   map[string]interface{}   `json:"-"`
+}
+
+func (p *cliControlRequestPayload) UnmarshalJSON(data []byte) error {
+	type payloadAlias cliControlRequestPayload
+
+	var decoded payloadAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		decoded.Raw = raw
+	}
+
+	*p = cliControlRequestPayload(decoded)
+	return nil
 }
 
 type cliControlResponseEnvelope struct {
