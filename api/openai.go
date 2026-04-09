@@ -26,6 +26,7 @@ type openAIRequest struct {
 	Temperature *float64        `json:"temperature,omitempty"`
 	TopP        *float64        `json:"top_p,omitempty"`
 	Stop        []string        `json:"stop,omitempty"`
+	Options     map[string]any  `json:"options,omitempty"`
 }
 
 type openAIMessage struct {
@@ -137,6 +138,19 @@ func convertToOpenAIRequest(req MessagesRequest) openAIRequest {
 	return oaiReq
 }
 
+func applyLocalOpenAIOptions(req *openAIRequest, cfg ClientConfig) {
+	if req == nil || cfg.ContextWindow <= 0 {
+		return
+	}
+	if !isTrustedLocalBaseURL(cfg.BaseURL) {
+		return
+	}
+	if req.Options == nil {
+		req.Options = map[string]any{}
+	}
+	req.Options["num_ctx"] = cfg.ContextWindow
+}
+
 func convertMessageToOpenAI(msg APIMessage) []openAIMessage {
 	var msgs []openAIMessage
 
@@ -181,7 +195,10 @@ func convertMessageToOpenAI(msg APIMessage) []openAIMessage {
 		}
 
 	case "assistant":
-		oaiMsg := openAIMessage{Role: "assistant"}
+		oaiMsg := openAIMessage{
+			Role:    "assistant",
+			Content: "",
+		}
 		var textParts []string
 		var toolCalls []openAIToolCall
 
@@ -360,6 +377,7 @@ func convertOpenAIResponse(resp openAIResponse) *StreamMessage {
 func (c *Client) createOpenAIStream(ctx context.Context, req MessagesRequest, eventCh chan<- StreamEvent) error {
 	oaiReq := convertToOpenAIRequest(req)
 	oaiReq.Stream = true
+	applyLocalOpenAIOptions(&oaiReq, c.config)
 
 	body, err := json.Marshal(oaiReq)
 	if err != nil {
@@ -519,6 +537,7 @@ func (c *Client) createOpenAIStream(ctx context.Context, req MessagesRequest, ev
 func (c *Client) createOpenAIMessage(ctx context.Context, req MessagesRequest) (*StreamMessage, error) {
 	oaiReq := convertToOpenAIRequest(req)
 	oaiReq.Stream = false
+	applyLocalOpenAIOptions(&oaiReq, c.config)
 
 	body, err := json.Marshal(oaiReq)
 	if err != nil {

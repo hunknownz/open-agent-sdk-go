@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -28,11 +27,12 @@ type cliContentBlock struct {
 	Thinking string `json:"thinking,omitempty"`
 }
 
-func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- types.SDKMessage) error {
-	startTime := time.Now()
-	a.cliTurnMu.Lock()
-	defer a.cliTurnMu.Unlock()
+const (
+	maxCLITransportRecoveryAttempts = 3
+	cliTransportRecoveryBaseDelay   = 250 * time.Millisecond
+)
 
+func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- types.SDKMessage) error {
 	userMsg := types.Message{
 		Type: types.MessageTypeUser,
 		Role: "user",
@@ -45,6 +45,43 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 	}
 	a.messages = append(a.messages, userMsg)
 
+	var lastErr error
+	for attempt := 0; attempt < maxCLITransportRecoveryAttempts; attempt++ {
+		err := a.runCLITurn(ctx, prompt, eventCh)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !errors.Is(err, errCLITransportUnavailable) {
+			return err
+		}
+
+		a.resetCLISession()
+		if attempt == maxCLITransportRecoveryAttempts-1 {
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(cliTransportRecoveryDelay(attempt)):
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = errCLITransportUnavailable
+	}
+	return fmt.Errorf(
+		"claude cli transport unavailable after %d restart attempts: %w",
+		maxCLITransportRecoveryAttempts,
+		lastErr,
+	)
+}
+
+func (a *Agent) runCLITurn(ctx context.Context, prompt string, eventCh chan<- types.SDKMessage) error {
+	a.cliTurnMu.Lock()
+	defer a.cliTurnMu.Unlock()
+
 	if err := a.ensureCLISession(ctx); err != nil {
 		return err
 	}
@@ -53,15 +90,30 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 	if session == nil {
 		return fmt.Errorf("claude cli session is unavailable")
 	}
-	defer session.cancelAllControlRequests()
+
+	if err := session.transportError(); err != nil {
+		a.resetCLISession()
+		return err
+	}
 
 	if err := session.updateEnvironment(a.opts.Env); err != nil {
 		a.resetCLISession()
 		return err
 	}
 
-	if err := session.writeTurn(buildCLIUserInput(prompt)); err != nil {
+	if err := a.streamCLITurn(ctx, session, prompt, eventCh); err != nil {
 		a.resetCLISession()
+		return err
+	}
+
+	return nil
+}
+
+func (a *Agent) streamCLITurn(ctx context.Context, session *cliSession, prompt string, eventCh chan<- types.SDKMessage) error {
+	startTime := time.Now()
+	defer session.cancelAllControlRequests()
+
+	if err := session.writeTurn(buildCLIUserInput(prompt)); err != nil {
 		return err
 	}
 
@@ -76,13 +128,6 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 				a.resetCLISession()
 				return ctx.Err()
-			case errors.Is(err, io.EOF):
-				stderrText := session.stderrText()
-				a.resetCLISession()
-				if stderrText != "" {
-					return fmt.Errorf("claude cli did not emit a result message: %s", stderrText)
-				}
-				return fmt.Errorf("claude cli did not emit a result message")
 			default:
 				a.resetCLISession()
 				return err
@@ -184,6 +229,22 @@ func (a *Agent) runCLILoop(ctx context.Context, prompt string, eventCh chan<- ty
 			return nil
 		}
 	}
+}
+
+func cliTransportRecoveryDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+
+	delay := cliTransportRecoveryBaseDelay
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+		if delay >= 2*time.Second {
+			return 2 * time.Second
+		}
+	}
+
+	return delay
 }
 
 func (a *Agent) newCLICommand(ctx context.Context) (*exec.Cmd, error) {

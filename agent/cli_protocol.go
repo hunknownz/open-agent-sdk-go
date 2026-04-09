@@ -7,13 +7,9 @@ import (
 
 var cliScrubbedEnvKeys = map[string]struct{}{
 	"ANTHROPIC_API_KEY":        {},
-	"ANTHROPIC_AUTH_TOKEN":     {},
-	"ANTHROPIC_BASE_URL":       {},
 	"ANTHROPIC_CUSTOM_HEADERS": {},
 	"ANTHROPIC_MODEL":          {},
 	"CODEANY_API_KEY":          {},
-	"CODEANY_AUTH_TOKEN":       {},
-	"CODEANY_BASE_URL":         {},
 	"CODEANY_CUSTOM_HEADERS":   {},
 	"CODEANY_MODEL":            {},
 	"SPIRE2MIND_API_KEY":       {},

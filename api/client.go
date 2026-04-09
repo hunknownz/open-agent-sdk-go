@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -60,6 +61,7 @@ type ClientConfig struct {
 	APIKey        string
 	BaseURL       string
 	Model         string
+	ContextWindow int
 	MaxTokens     int
 	Provider      Provider // "anthropic" or "openai" (auto-detected if empty)
 	HTTPClient    *http.Client
@@ -104,6 +106,9 @@ func NewClient(config ClientConfig) *Client {
 	if config.MaxTokens == 0 {
 		cfg := GetModelConfig(config.Model)
 		config.MaxTokens = cfg.MaxOutputTokens
+	}
+	if config.ContextWindow <= 0 {
+		config.ContextWindow = 8192
 	}
 
 	// Auto-detect provider if not set
@@ -172,6 +177,50 @@ func (c *Client) SetModel(model string) {
 	c.config.Model = model
 	cfg := GetModelConfig(model)
 	c.config.MaxTokens = cfg.MaxOutputTokens
+}
+
+func isTrustedLocalBaseURL(baseURL string) bool {
+	raw := strings.TrimSpace(baseURL)
+	if raw == "" {
+		return false
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+
+	if ipv4 := ip.To4(); ipv4 != nil {
+		if ipv4[0] == 10 {
+			return true
+		}
+		if ipv4[0] == 192 && ipv4[1] == 168 {
+			return true
+		}
+		if ipv4[0] == 172 && ipv4[1] >= 16 && ipv4[1] <= 31 {
+			return true
+		}
+	}
+
+	return false
 }
 
 // APIMessage is a message sent to the API.

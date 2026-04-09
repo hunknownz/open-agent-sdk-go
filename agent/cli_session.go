@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"strings"
 	"sync"
 )
+
+var errCLITransportUnavailable = errors.New("claude cli transport unavailable")
 
 type cliSession struct {
 	mu         sync.Mutex
@@ -20,28 +23,39 @@ type cliSession struct {
 	stderrDone chan struct{}
 	events     chan cliStreamMessage
 	readDone   chan struct{}
+	waitDone   chan struct{}
 	doneCh     chan struct{}
 	readErr    error
+	waitErr    error
 	closed     bool
+	exited     bool
 
 	controlMu       sync.Mutex
 	pendingControls map[string]context.CancelFunc
 }
 
 func (a *Agent) ensureCLISession(ctx context.Context) error {
-	_ = ctx
 	a.cliMu.Lock()
-	defer a.cliMu.Unlock()
-
-	if a.cliSession != nil && !a.cliSession.isClosed() {
+	session := a.cliSession
+	if session != nil && session.isOperational() {
+		a.cliMu.Unlock()
 		return nil
 	}
+	a.cliSession = nil
+	a.cliMu.Unlock()
 
-	session, err := a.startCLISession(context.Background())
+	if session != nil {
+		_ = session.close()
+	}
+
+	session, err := a.startCLISession(ctx)
 	if err != nil {
 		return err
 	}
+
+	a.cliMu.Lock()
 	a.cliSession = session
+	a.cliMu.Unlock()
 	return nil
 }
 
@@ -83,17 +97,35 @@ func (a *Agent) startCLISession(ctx context.Context) (*cliSession, error) {
 		stderrDone:      make(chan struct{}),
 		events:          make(chan cliStreamMessage, 128),
 		readDone:        make(chan struct{}),
+		waitDone:        make(chan struct{}),
 		doneCh:          make(chan struct{}),
 		pendingControls: make(map[string]context.CancelFunc),
 	}
 
 	go session.readLoop(stdout)
+	go session.waitLoop()
 	go func() {
 		defer close(session.stderrDone)
 		_, _ = session.stderrBuf.ReadFrom(stderr)
 	}()
 
 	return session, nil
+}
+
+func (s *cliSession) waitLoop() {
+	defer close(s.waitDone)
+
+	var err error
+	if s.cmd != nil {
+		err = s.cmd.Wait()
+	}
+
+	s.mu.Lock()
+	s.exited = true
+	if err != nil && s.waitErr == nil {
+		s.waitErr = fmt.Errorf("wait for claude cli: %w", err)
+	}
+	s.mu.Unlock()
 }
 
 func (a *Agent) currentCLISession() *cliSession {
@@ -151,7 +183,17 @@ func (s *cliSession) isClosed() bool {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.closed
+	return s.closed || s.exited
+}
+
+func (s *cliSession) isOperational() bool {
+	if s == nil {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transportErrorLocked() == nil
 }
 
 func (s *cliSession) setReadErr(err error) {
@@ -172,6 +214,48 @@ func (s *cliSession) readerError() error {
 	return s.readErr
 }
 
+func (s *cliSession) waitError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.waitErr
+}
+
+func (s *cliSession) transportError() error {
+	if s == nil {
+		return fmt.Errorf("%w: claude cli session is nil", errCLITransportUnavailable)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transportErrorLocked()
+}
+
+func (s *cliSession) transportErrorLocked() error {
+	if s.closed {
+		return fmt.Errorf("%w: claude cli session is closed", errCLITransportUnavailable)
+	}
+	if s.readErr != nil {
+		return fmt.Errorf("%w: %v", errCLITransportUnavailable, s.readErr)
+	}
+	if s.waitErr != nil {
+		return fmt.Errorf("%w: %v", errCLITransportUnavailable, s.waitErr)
+	}
+	if s.exited {
+		return fmt.Errorf("%w: claude cli process exited", errCLITransportUnavailable)
+	}
+	if s.cmd == nil || s.cmd.Process == nil {
+		return fmt.Errorf("%w: claude cli process is unavailable", errCLITransportUnavailable)
+	}
+	if s.cmd.ProcessState != nil && s.cmd.ProcessState.Exited() {
+		return fmt.Errorf("%w: claude cli process exited", errCLITransportUnavailable)
+	}
+	if s.stdin == nil {
+		return fmt.Errorf("%w: claude cli stdin is unavailable", errCLITransportUnavailable)
+	}
+
+	return nil
+}
+
 func (s *cliSession) nextMessage(ctx context.Context) (*cliStreamMessage, error) {
 	select {
 	case <-ctx.Done():
@@ -179,9 +263,12 @@ func (s *cliSession) nextMessage(ctx context.Context) (*cliStreamMessage, error)
 	case message, ok := <-s.events:
 		if !ok {
 			if err := s.readerError(); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%w: %v", errCLITransportUnavailable, err)
 			}
-			return nil, io.EOF
+			if err := s.waitError(); err != nil {
+				return nil, fmt.Errorf("%w: %v", errCLITransportUnavailable, err)
+			}
+			return nil, fmt.Errorf("%w: stream closed before result", errCLITransportUnavailable)
 		}
 		return &message, nil
 	}
@@ -191,12 +278,12 @@ func (s *cliSession) writeTurn(payload string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.closed {
-		return fmt.Errorf("claude cli session is closed")
+	if err := s.transportErrorLocked(); err != nil {
+		return err
 	}
 
 	if _, err := io.WriteString(s.stdin, payload); err != nil {
-		return fmt.Errorf("write claude cli input: %w", err)
+		return fmt.Errorf("%w: write claude cli input: %w", errCLITransportUnavailable, err)
 	}
 	return nil
 }
@@ -328,6 +415,7 @@ func (s *cliSession) close() error {
 	stdin := s.stdin
 	cmd := s.cmd
 	readDone := s.readDone
+	waitDone := s.waitDone
 	stderrDone := s.stderrDone
 	s.mu.Unlock()
 
@@ -335,18 +423,20 @@ func (s *cliSession) close() error {
 		_ = stdin.Close()
 	}
 
-	var waitErr error
-	if cmd != nil {
-		waitErr = cmd.Wait()
-	}
 	if readDone != nil {
 		<-readDone
+	}
+	if waitDone != nil {
+		<-waitDone
 	}
 	if stderrDone != nil {
 		<-stderrDone
 	}
 
-	return waitErr
+	if cmd == nil {
+		return nil
+	}
+	return s.waitError()
 }
 
 func (s *cliSession) stderrText() string {

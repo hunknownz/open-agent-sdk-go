@@ -26,10 +26,6 @@ func TestClaudeCLISessionReuse(t *testing.T) {
 	agent := newHelperProcessAgent()
 	defer agent.Close()
 
-	if err := agent.Init(context.Background()); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
 	resultOne, err := agent.Prompt(context.Background(), "first")
 	if err != nil {
 		t.Fatalf("Prompt(first) error = %v", err)
@@ -48,6 +44,23 @@ func TestClaudeCLISessionReuse(t *testing.T) {
 	}
 	if turnOne != 1 || turnTwo != 2 {
 		t.Fatalf("expected turns 1 and 2, got %d and %d", turnOne, turnTwo)
+	}
+}
+
+func TestClaudeCLIInitPrewarmsSession(t *testing.T) {
+	agent := newHelperProcessAgent()
+	defer agent.Close()
+
+	if err := agent.Init(context.Background()); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	session := agent.currentCLISession()
+	if session == nil {
+		t.Fatal("expected Init() to create a claude cli session")
+	}
+	if err := session.transportError(); err != nil {
+		t.Fatalf("expected a healthy session after Init(), got %v", err)
 	}
 }
 
@@ -82,10 +95,6 @@ func TestClaudeCLIUpdateEnv(t *testing.T) {
 	agent := newHelperProcessAgent()
 	defer agent.Close()
 
-	if err := agent.Init(context.Background()); err != nil {
-		t.Fatalf("Init() error = %v", err)
-	}
-
 	if err := agent.UpdateEnv(map[string]string{"TEST_DYNAMIC_ENV": "refreshed"}); err != nil {
 		t.Fatalf("UpdateEnv() error = %v", err)
 	}
@@ -97,6 +106,37 @@ func TestClaudeCLIUpdateEnv(t *testing.T) {
 
 	if got := strings.TrimSpace(result.Text); got != "env=refreshed" {
 		t.Fatalf("expected env refresh to reach child session, got %q", got)
+	}
+}
+
+func TestBuildCLIEnvAllowsAnthropicOverridesForCLIStartup(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-cli-test")
+
+	env := buildCLIEnv(map[string]string{
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+		"CLAUDE_CODE_ATTRIBUTION_HEADER":           "0",
+	})
+
+	envMap := make(map[string]string, len(env))
+	for _, entry := range env {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if envMap["ANTHROPIC_BASE_URL"] != "https://example.invalid" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q", envMap["ANTHROPIC_BASE_URL"])
+	}
+	if envMap["ANTHROPIC_AUTH_TOKEN"] != "sk-cli-test" {
+		t.Fatalf("ANTHROPIC_AUTH_TOKEN = %q", envMap["ANTHROPIC_AUTH_TOKEN"])
+	}
+	if envMap["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] != "1" {
+		t.Fatalf("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = %q", envMap["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"])
+	}
+	if envMap["CLAUDE_CODE_ATTRIBUTION_HEADER"] != "0" {
+		t.Fatalf("CLAUDE_CODE_ATTRIBUTION_HEADER = %q", envMap["CLAUDE_CODE_ATTRIBUTION_HEADER"])
 	}
 }
 
@@ -197,12 +237,69 @@ func TestClaudeCLIControlHandlerFallback(t *testing.T) {
 	}
 }
 
+func TestClaudeCLIRestartsExitedSessionOnNextPrompt(t *testing.T) {
+	agent := newHelperProcessAgent()
+	defer agent.Close()
+
+	first, err := agent.Prompt(context.Background(), "exit-after-result")
+	if err != nil {
+		t.Fatalf("Prompt(exit-after-result) error = %v", err)
+	}
+	if got := strings.TrimSpace(first.Text); got != "exit=after-result" {
+		t.Fatalf("unexpected first result: %q", got)
+	}
+
+	second, err := agent.Prompt(context.Background(), "after-exit")
+	if err != nil {
+		t.Fatalf("Prompt(after-exit) error = %v", err)
+	}
+
+	sessionID, turn := parseSessionAndTurn(t, second.Text)
+	if strings.TrimSpace(sessionID) == "" {
+		t.Fatalf("expected a restarted session id, got %q", second.Text)
+	}
+	if turn != 1 {
+		t.Fatalf("expected restarted session turn to reset to 1, got %d", turn)
+	}
+}
+
+func TestClaudeCLIRestartsBrokenStdinOnPrompt(t *testing.T) {
+	agent := newHelperProcessAgent()
+	defer agent.Close()
+
+	if err := agent.ensureCLISession(context.Background()); err != nil {
+		t.Fatalf("ensureCLISession() error = %v", err)
+	}
+
+	session := agent.currentCLISession()
+	if session == nil {
+		t.Fatal("expected CLI session to be initialized")
+	}
+
+	if err := session.stdin.Close(); err != nil {
+		t.Fatalf("stdin.Close() error = %v", err)
+	}
+
+	result, err := agent.Prompt(context.Background(), "after-broken-stdin")
+	if err != nil {
+		t.Fatalf("Prompt(after-broken-stdin) error = %v", err)
+	}
+
+	sessionID, turn := parseSessionAndTurn(t, result.Text)
+	if strings.TrimSpace(sessionID) == "" {
+		t.Fatalf("expected a restarted session id, got %q", result.Text)
+	}
+	if turn != 1 {
+		t.Fatalf("expected restarted session turn to reset to 1, got %d", turn)
+	}
+}
+
 func TestClaudeCLISessionCancelRequest(t *testing.T) {
 	agent := newHelperProcessAgent()
 	defer agent.Close()
 
-	if err := agent.Init(context.Background()); err != nil {
-		t.Fatalf("Init() error = %v", err)
+	if err := agent.ensureCLISession(context.Background()); err != nil {
+		t.Fatalf("ensureCLISession() error = %v", err)
 	}
 
 	session := agent.currentCLISession()
@@ -335,6 +432,9 @@ func handleHelperUserMessage(state *helperCLIState, payload map[string]interface
 		})
 	case "env":
 		helperWriteAssistantAndResult(state.turn, fmt.Sprintf("env=%s", state.env["TEST_DYNAMIC_ENV"]))
+	case "exit-after-result":
+		helperWriteAssistantAndResult(state.turn, "exit=after-result")
+		os.Exit(0)
 	default:
 		helperWriteAssistantAndResult(state.turn, fmt.Sprintf("session=%s turn=%d", state.sessionID, state.turn))
 	}
