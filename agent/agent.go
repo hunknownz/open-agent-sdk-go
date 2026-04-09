@@ -69,6 +69,9 @@ type Options struct {
 	// API provider: "anthropic" or "openai" (auto-detected if empty).
 	APIProvider string
 
+	// Requested model context window for compatible backends.
+	ContextWindow int
+
 	// Working directory for tools
 	CWD string
 
@@ -200,6 +203,7 @@ func New(opts Options) *Agent {
 		APIKey:        opts.APIKey,
 		BaseURL:       opts.BaseURL,
 		Model:         opts.Model,
+		ContextWindow: opts.ContextWindow,
 		Provider:      api.Provider(opts.APIProvider),
 		CustomHeaders: opts.CustomHeaders,
 		ProxyURL:      opts.ProxyURL,
@@ -207,6 +211,9 @@ func New(opts Options) *Agent {
 	})
 
 	registry := tools.DefaultRegistry()
+	if opts.JSONSchema != nil {
+		registry.Register(newStructuredOutputTool(opts.JSONSchema))
+	}
 	for _, t := range opts.CustomTools {
 		registry.Register(t)
 	}

@@ -17,6 +17,7 @@ type ToolCallRequest struct {
 // ToolCallResponse is the result of a tool call execution.
 type ToolCallResponse struct {
 	ToolUseID string
+	ToolName  string
 	Result    *types.ToolResult
 	Error     error
 }
@@ -98,6 +99,7 @@ func (e *Executor) runSingle(ctx context.Context, call ToolCallRequest) ToolCall
 	if tool == nil {
 		return ToolCallResponse{
 			ToolUseID: call.ToolUseID,
+			ToolName:  call.ToolName,
 			Result: &types.ToolResult{
 				IsError: true,
 				Error:   "Unknown tool: " + call.ToolName,
@@ -115,6 +117,7 @@ func (e *Executor) runSingle(ctx context.Context, call ToolCallRequest) ToolCall
 		if err != nil {
 			return ToolCallResponse{
 				ToolUseID: call.ToolUseID,
+				ToolName:  call.ToolName,
 				Result: &types.ToolResult{
 					IsError: true,
 					Error:   "Permission check failed: " + err.Error(),
@@ -128,6 +131,7 @@ func (e *Executor) runSingle(ctx context.Context, call ToolCallRequest) ToolCall
 			}
 			return ToolCallResponse{
 				ToolUseID: call.ToolUseID,
+				ToolName:  call.ToolName,
 				Result: &types.ToolResult{
 					IsError: true,
 					Error:   reason,
@@ -162,6 +166,7 @@ func (e *Executor) runSingle(ctx context.Context, call ToolCallRequest) ToolCall
 
 	return ToolCallResponse{
 		ToolUseID: call.ToolUseID,
+		ToolName:  call.ToolName,
 		Result:    result,
 	}
 }

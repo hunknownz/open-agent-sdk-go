@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -107,6 +109,7 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 
 	var totalUsage types.Usage
 	turn := 0
+	var structuredOutput interface{}
 
 	// Main loop
 	for turn < a.opts.MaxTurns {
@@ -271,6 +274,8 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 			break
 		}
 
+		repairEmptyToolUseInputs(assistantMsg, toolUseBlocks)
+
 		// Check stop reason
 		if assistantMsg.StopReason == "end_turn" && len(toolUseBlocks) == 0 {
 			break
@@ -287,6 +292,11 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 		}
 
 		results := executor.RunTools(ctx, toolCalls)
+
+		if captured, ok := extractStructuredOutput(results); ok {
+			structuredOutput = captured
+			break
+		}
 
 		// Build tool result message
 		var toolResultContent []types.ContentBlock
@@ -351,15 +361,32 @@ func (a *Agent) runLoop(ctx context.Context, prompt string, eventCh chan<- types
 
 	// Emit result
 	eventCh <- types.SDKMessage{
-		Type:     types.MessageTypeResult,
-		Text:     types.ExtractText(&a.messages[len(a.messages)-1]),
-		Usage:    &totalUsage,
-		NumTurns: turn,
-		Duration: time.Since(startTime).Milliseconds(),
-		Cost:     a.costTracker.TotalCost(),
+		Type:             types.MessageTypeResult,
+		Text:             types.ExtractText(&a.messages[len(a.messages)-1]),
+		Usage:            &totalUsage,
+		NumTurns:         turn,
+		Duration:         time.Since(startTime).Milliseconds(),
+		Cost:             a.costTracker.TotalCost(),
+		StructuredOutput: structuredOutput,
 	}
 
 	return nil
+}
+
+func extractStructuredOutput(results []tools.ToolCallResponse) (interface{}, bool) {
+	for _, result := range results {
+		if result.Result == nil || result.Result.IsError {
+			continue
+		}
+		if result.ToolName != StructuredOutputToolName {
+			continue
+		}
+		if result.Result.Data == nil {
+			continue
+		}
+		return result.Result.Data, true
+	}
+	return nil, false
 }
 
 // processStreamEvent accumulates streaming data into the assistant message.
@@ -517,4 +544,43 @@ func parseJSON(data string, v interface{}) error {
 // jsonUnmarshal is a wrapper for json.Unmarshal to handle edge cases.
 func jsonUnmarshal(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
+}
+
+var embeddedJSONObjectPattern = regexp.MustCompile(`\{[\s\S]*\}`)
+
+func repairEmptyToolUseInputs(msg *types.Message, toolUseBlocks []types.ToolUseBlock) {
+	if msg == nil || len(toolUseBlocks) != 1 {
+		return
+	}
+
+	if len(toolUseBlocks[0].Input) > 0 {
+		return
+	}
+
+	text := strings.TrimSpace(types.ExtractText(msg))
+	if text == "" {
+		return
+	}
+
+	fragment := embeddedJSONObjectPattern.FindString(text)
+	if strings.TrimSpace(fragment) == "" {
+		return
+	}
+
+	var input map[string]interface{}
+	if err := parseJSON(fragment, &input); err != nil {
+		return
+	}
+	if len(input) == 0 {
+		return
+	}
+
+	for i := range msg.Content {
+		if msg.Content[i].Type == types.ContentBlockToolUse && msg.Content[i].ID == toolUseBlocks[0].ID {
+			msg.Content[i].Input = input
+			break
+		}
+	}
+
+	toolUseBlocks[0].Input = input
 }
