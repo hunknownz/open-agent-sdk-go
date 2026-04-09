@@ -23,7 +23,7 @@ const (
 	defaultModel     = "sonnet-4-6"
 	apiVersion       = "2023-06-01"
 	defaultMaxTokens = 16384
-	maxRetries       = 3
+	defaultMaxRetries = 3
 )
 
 // ModelConfig holds per-model configuration.
@@ -68,6 +68,7 @@ type ClientConfig struct {
 	CustomHeaders map[string]string
 	ProxyURL      string
 	TimeoutMs     int
+	MaxRetries    int
 }
 
 // Client communicates with the Messages API.
@@ -109,6 +110,9 @@ func NewClient(config ClientConfig) *Client {
 	}
 	if config.ContextWindow <= 0 {
 		config.ContextWindow = 8192
+	}
+	if config.MaxRetries <= 0 {
+		config.MaxRetries = defaultMaxRetries
 	}
 
 	// Auto-detect provider if not set
@@ -409,7 +413,7 @@ func (c *Client) CreateMessageStream(ctx context.Context, req MessagesRequest) (
 
 		// Retry logic for transient errors
 		var resp *http.Response
-		for attempt := 0; attempt <= maxRetries; attempt++ {
+		for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 			if attempt > 0 {
 				backoff := time.Duration(attempt*attempt) * time.Second
 				select {
@@ -440,7 +444,7 @@ func (c *Client) CreateMessageStream(ctx context.Context, req MessagesRequest) (
 
 			resp, err = c.config.HTTPClient.Do(httpReq)
 			if err != nil {
-				if attempt < maxRetries && isRetryableError(err) {
+				if attempt < c.config.MaxRetries && isRetryableError(err) {
 					continue
 				}
 				errCh <- fmt.Errorf("send request: %w", err)
@@ -451,7 +455,7 @@ func (c *Client) CreateMessageStream(ctx context.Context, req MessagesRequest) (
 			if resp.StatusCode == 429 || resp.StatusCode == 529 || resp.StatusCode >= 500 {
 				io.ReadAll(resp.Body)
 				resp.Body.Close()
-				if attempt < maxRetries {
+				if attempt < c.config.MaxRetries {
 					continue
 				}
 			}
@@ -526,7 +530,7 @@ func (c *Client) CreateMessage(ctx context.Context, req MessagesRequest) (*Strea
 	requestID := uuid.New().String()
 
 	var resp *http.Response
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt*attempt) * time.Second)
 		}
@@ -548,7 +552,7 @@ func (c *Client) CreateMessage(ctx context.Context, req MessagesRequest) (*Strea
 
 		resp, err = c.config.HTTPClient.Do(httpReq)
 		if err != nil {
-			if attempt < maxRetries && isRetryableError(err) {
+			if attempt < c.config.MaxRetries && isRetryableError(err) {
 				continue
 			}
 			return nil, fmt.Errorf("send request: %w", err)
@@ -557,7 +561,7 @@ func (c *Client) CreateMessage(ctx context.Context, req MessagesRequest) (*Strea
 		if resp.StatusCode == 429 || resp.StatusCode == 529 || resp.StatusCode >= 500 {
 			io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if attempt < maxRetries {
+			if attempt < c.config.MaxRetries {
 				continue
 			}
 		}

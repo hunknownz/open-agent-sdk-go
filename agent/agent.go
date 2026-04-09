@@ -156,6 +156,9 @@ type Options struct {
 	// API timeout in milliseconds
 	TimeoutMs int
 
+	// Max API retries for transient provider failures.
+	MaxRetries int
+
 	// Subagent definitions
 	Agents map[string]AgentDefinition
 }
@@ -208,6 +211,7 @@ func New(opts Options) *Agent {
 		CustomHeaders: opts.CustomHeaders,
 		ProxyURL:      opts.ProxyURL,
 		TimeoutMs:     opts.TimeoutMs,
+		MaxRetries:    opts.MaxRetries,
 	})
 
 	registry := tools.DefaultRegistry()
@@ -440,6 +444,7 @@ func (a *Agent) spawnSubagent(ctx context.Context, config tools.SubagentConfig) 
 		CustomHeaders:  a.opts.CustomHeaders,
 		ProxyURL:       a.opts.ProxyURL,
 		TimeoutMs:      a.opts.TimeoutMs,
+		MaxRetries:     a.opts.MaxRetries,
 		CLICommand:     a.opts.CLICommand,
 		CLIArgs:        append([]string{}, a.opts.CLIArgs...),
 	}

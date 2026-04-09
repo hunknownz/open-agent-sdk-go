@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hunknownz/open-agent-sdk-go/types"
@@ -386,22 +387,46 @@ func (c *Client) createOpenAIStream(ctx context.Context, req MessagesRequest, ev
 
 	apiURL := strings.TrimRight(c.config.BaseURL, "/") + "/v1/chat/completions"
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
+	var resp *http.Response
+	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt*attempt) * time.Second
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
-	httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("create request: %w", err)
+		}
 
-	for k, v := range c.config.CustomHeaders {
-		httpReq.Header.Set(k, v)
-	}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+		httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := c.config.HTTPClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		for k, v := range c.config.CustomHeaders {
+			httpReq.Header.Set(k, v)
+		}
+
+		resp, err = c.config.HTTPClient.Do(httpReq)
+		if err != nil {
+			if attempt < c.config.MaxRetries && isRetryableError(err) {
+				continue
+			}
+			return fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if attempt < c.config.MaxRetries {
+				continue
+			}
+		}
+		break
 	}
 	defer resp.Body.Close()
 
@@ -546,21 +571,45 @@ func (c *Client) createOpenAIMessage(ctx context.Context, req MessagesRequest) (
 
 	apiURL := strings.TrimRight(c.config.BaseURL, "/") + "/v1/chat/completions"
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
+	var resp *http.Response
+	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt*attempt) * time.Second
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
 
-	for k, v := range c.config.CustomHeaders {
-		httpReq.Header.Set(k, v)
-	}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
 
-	resp, err := c.config.HTTPClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		for k, v := range c.config.CustomHeaders {
+			httpReq.Header.Set(k, v)
+		}
+
+		resp, err = c.config.HTTPClient.Do(httpReq)
+		if err != nil {
+			if attempt < c.config.MaxRetries && isRetryableError(err) {
+				continue
+			}
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if attempt < c.config.MaxRetries {
+				continue
+			}
+		}
+		break
 	}
 	defer resp.Body.Close()
 

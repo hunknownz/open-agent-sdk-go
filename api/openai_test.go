@@ -1,6 +1,10 @@
 package api
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/hunknownz/open-agent-sdk-go/types"
@@ -82,5 +86,34 @@ func TestApplyLocalOpenAIOptionsSkipsRemoteBackends(t *testing.T) {
 
 	if req.Options != nil {
 		t.Fatalf("expected no local options for remote backend, got %#v", req.Options)
+	}
+}
+
+func TestCreateMessageUsesConfiguredMaxRetries(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		http.Error(w, fmt.Sprintf(`{"error":"boom-%d"}`, attempts), http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		BaseURL:    server.URL,
+		APIKey:     "test",
+		Model:      "qwen3.5:35b-a3b",
+		Provider:   ProviderOpenAI,
+		HTTPClient: server.Client(),
+		MaxRetries: 1,
+	})
+
+	_, err := client.CreateMessage(context.Background(), MessagesRequest{
+		Model:    "qwen3.5:35b-a3b",
+		Messages: []APIMessage{{Role: "user", Content: []types.ContentBlock{{Type: types.ContentBlockText, Text: "hi"}}}},
+	})
+	if err == nil {
+		t.Fatal("expected request to fail")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
 	}
 }
